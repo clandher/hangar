@@ -760,7 +760,7 @@ function renderHangarTabs() {
 }
 
 // ── actions ──────────────────────────────────────────────────
-function openCard(ev, p)    { vscode.postMessage({ command: 'openProject', path: p, newWindow: ev.metaKey || ev.ctrlKey }); }
+function openCard(ev, p)    { vscode.postMessage({ command: 'openProject', path: p, newWindow: true }); }
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
