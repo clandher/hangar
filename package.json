@@ -1,0 +1,39 @@
+{
+  "name": "hangar",
+  "publisher": "clandher",
+  "displayName": "Hangar",
+  "description": "Your local projects, always within reach.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "categories": ["Other"],
+  "keywords": ["projects", "dashboard", "launcher", "workspace"],
+  "homepage": "https://github.com/clandher/hangar",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "hangar.open",
+        "title": "Open Hangar"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clandher/hangar"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.0.0"
+  }
+}
