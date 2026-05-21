@@ -98,6 +98,53 @@ html, body {
 ::selection { background: var(--accent); color: var(--bg); }
 
 /* ============================================================
+   hangar tabs
+   ============================================================ */
+
+.hangar-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.htab {
+  font-size: 11px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.1s, border-color 0.1s;
+}
+
+.htab:hover { color: var(--fg); border-color: var(--accent-dim); }
+
+.htab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.htab-remove {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.htab-remove:hover { color: var(--fg); }
+
+.htab-add {
+  font-size: 15px;
+  padding: 1px 8px;
+  color: var(--muted);
+}
+.htab-add:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+/* ============================================================
    topbar
    ============================================================ */
 

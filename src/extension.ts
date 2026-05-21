@@ -22,9 +22,12 @@ type Project = {
 };
 
 type Recents = Record<string, number>;
+type Hangar = { name: string; path: string };
 
 const RECENTS_KEY = 'recents';
 const THEME_KEY = 'theme';
+const HANGARS_KEY = 'hangars';
+const ACTIVE_HANGAR_KEY = 'activeHangar';
 const DEFAULT_THEME = 'terminal';
 const RECENTS_MAX = 8;
 const CONCURRENCY = 8;
@@ -32,9 +35,17 @@ const ENRICH_TIMEOUT = 4000;
 
 export async function activate(context: vscode.ExtensionContext) {
 
-  let projectsDir = context.globalState.get<string>('projectsDir');
+  // migrate legacy single-dir setting
+  const legacyDir = context.globalState.get<string>('projectsDir');
+  if (legacyDir && !context.globalState.get<Hangar[]>(HANGARS_KEY)) {
+    const name = path.basename(legacyDir);
+    await context.globalState.update(HANGARS_KEY, [{ name, path: legacyDir }]);
+    await context.globalState.update('projectsDir', undefined);
+  }
 
-  if (!projectsDir) {
+  let hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+
+  if (!hangars.length) {
     const selected = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,
@@ -42,17 +53,15 @@ export async function activate(context: vscode.ExtensionContext) {
       openLabel: 'Seleccionar carpeta de proyectos'
     });
     if (!selected || !selected[0]) return;
-    projectsDir = selected[0].fsPath;
-    await context.globalState.update('projectsDir', projectsDir);
+    const p = selected[0].fsPath;
+    hangars = [{ name: path.basename(p), path: p }];
+    await context.globalState.update(HANGARS_KEY, hangars);
   }
 
-  openDashboard(context, projectsDir);
+  openDashboard(context);
 }
 
-async function openDashboard(
-  context: vscode.ExtensionContext,
-  projectsDir: string
-) {
+async function openDashboard(context: vscode.ExtensionContext) {
 
   const panel = vscode.window.createWebviewPanel(
     'dashboard',
@@ -72,10 +81,17 @@ async function openDashboard(
   );
 
   const render = () => {
+    const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+    const activeIdx = Math.min(
+      context.globalState.get<number>(ACTIVE_HANGAR_KEY, 0),
+      hangars.length - 1
+    );
+    if (!hangars.length) return;
+    const projectsDir = hangars[activeIdx].path;
     const recents = context.globalState.get<Recents>(RECENTS_KEY, {});
     const theme = context.globalState.get<string>(THEME_KEY, DEFAULT_THEME);
     const projects = getProjects(projectsDir, recents);
-    panel.webview.html = getHtml(projects, projectsDir, theme, styleUri.toString(), vscode.workspace.name);
+    panel.webview.html = getHtml(projects, hangars, activeIdx, theme, styleUri.toString(), vscode.workspace.name);
     enrichProjects(projects, panel);
   };
 
@@ -90,15 +106,36 @@ async function openDashboard(
       vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(msg.path), msg.newWindow === true);
     }
 
-    if (msg.command === 'changeDirectory') {
+    if (msg.command === 'switchHangar') {
+      await context.globalState.update(ACTIVE_HANGAR_KEY, msg.index);
+      render();
+    }
+
+    if (msg.command === 'addHangar') {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: false,
         canSelectFolders: true,
-        canSelectMany: false
+        canSelectMany: false,
+        openLabel: 'Agregar hangar'
       });
       if (!selected || !selected[0]) return;
-      await context.globalState.update('projectsDir', selected[0].fsPath);
-      projectsDir = selected[0].fsPath;
+      const p = selected[0].fsPath;
+      const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+      if (hangars.some(h => h.path === p)) return;
+      const newHangars = [...hangars, { name: path.basename(p), path: p }];
+      await context.globalState.update(HANGARS_KEY, newHangars);
+      await context.globalState.update(ACTIVE_HANGAR_KEY, newHangars.length - 1);
+      render();
+    }
+
+    if (msg.command === 'removeHangar') {
+      const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+      if (hangars.length <= 1) return;
+      const newHangars = hangars.filter((_, i) => i !== msg.index);
+      const activeIdx = context.globalState.get<number>(ACTIVE_HANGAR_KEY, 0);
+      const newActive = Math.min(activeIdx, newHangars.length - 1);
+      await context.globalState.update(HANGARS_KEY, newHangars);
+      await context.globalState.update(ACTIVE_HANGAR_KEY, newActive);
       render();
     }
 
@@ -257,14 +294,19 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function getHtml(projects: Project[], projectsDir: string, theme: string, styleUri: string, workspaceName?: string): string {
+function getHtml(projects: Project[], hangars: Hangar[], activeIdx: number, theme: string, styleUri: string, workspaceName?: string): string {
 
-  const displayName = workspaceName ?? path.basename(projectsDir);
+  const activeHangar = hangars[activeIdx];
+  const projectsDir = activeHangar.path;
+  const displayName = workspaceName ?? activeHangar.name;
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
   const recentProjects = projects
     .filter(p => p.lastOpened > 0)
     .sort((a, b) => b.lastOpened - a.lastOpened)
     .slice(0, RECENTS_MAX);
+
+  const HANGARS_JSON = JSON.stringify(hangars);
+  const ACTIVE_IDX_JSON = JSON.stringify(activeIdx);
 
   // passed to webview JS as data
   const THEMES_JSON = JSON.stringify(['terminal', 'amber', 'synthwave', 'paper']);
@@ -286,11 +328,11 @@ function getHtml(projects: Project[], projectsDir: string, theme: string, styleU
     </div>
     <div class="meta">
       <span class="path" title="${esc(projectsDir)}">${esc(projectsDir)}</span>
-      <button onclick="changeDirectory()">cd</button>
       <button onclick="refresh()">↺</button>
       <button id="theme-cycle" class="cycle-btn">theme: ${esc(theme)} ▸</button>
     </div>
   </div>
+  <div class="hangar-tabs" id="hangar-tabs"></div>
   <div class="controls">
     <div class="search">
       <span class="sigil">$</span>
@@ -327,6 +369,8 @@ const recentProjects = ${JSON.stringify(recentProjects)};
 const groups = ${JSON.stringify(groups)};
 const THEMES = ${THEMES_JSON};
 const SORTS  = ${SORTS_JSON};
+const HANGARS = ${HANGARS_JSON};
+let activeHangarIdx = ${ACTIVE_IDX_JSON};
 
 // working copies with async enrichment fields
 const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null }));
@@ -625,12 +669,40 @@ window.addEventListener('message', ev => {
   }
 });
 
+// ── hangar tabs ──────────────────────────────────────────────
+function renderHangarTabs() {
+  const $tabs = document.getElementById('hangar-tabs');
+  let html = HANGARS.map((h, i) =>
+    '<div class="htab' + (i === activeHangarIdx ? ' active' : '') + '" data-idx="' + i + '">' +
+    esc(h.name) +
+    (HANGARS.length > 1 ? '<span class="htab-remove" data-idx="' + i + '">×</span>' : '') +
+    '</div>'
+  ).join('');
+  html += '<div class="htab htab-add" id="htab-add">+</div>';
+  $tabs.innerHTML = html;
+
+  $tabs.querySelectorAll('.htab[data-idx]').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.classList.contains('htab-remove')) return;
+      vscode.postMessage({ command: 'switchHangar', index: parseInt(el.getAttribute('data-idx')) });
+    });
+  });
+  $tabs.querySelectorAll('.htab-remove').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      vscode.postMessage({ command: 'removeHangar', index: parseInt(el.getAttribute('data-idx')) });
+    });
+  });
+  document.getElementById('htab-add').addEventListener('click', () => {
+    vscode.postMessage({ command: 'addHangar' });
+  });
+}
+
 // ── actions ──────────────────────────────────────────────────
 function openCard(ev, p)    { vscode.postMessage({ command: 'openProject', path: p, newWindow: ev.metaKey || ev.ctrlKey }); }
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
-function changeDirectory(){ vscode.postMessage({ command: 'changeDirectory' }); }
 function refresh()        { vscode.postMessage({ command: 'refresh' }); }
 function clearRecents()   { vscode.postMessage({ command: 'clearRecents' }); }
 
@@ -688,6 +760,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
+renderHangarTabs();
 renderChips();
 render();
 // focus search after paint
