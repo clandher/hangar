@@ -31,7 +31,6 @@ const HANGARS_KEY = 'hangars';
 const FAVORITES_KEY = 'favorites';
 const UI_STATE_KEY = 'uiState';
 const DEFAULT_THEME = 'terminal';
-const RECENTS_MAX = 8;
 const CONCURRENCY = 8;
 const ENRICH_TIMEOUT = 4000;
 
@@ -64,7 +63,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('hangar.open', () => openDashboard(context))
   );
 
-  openDashboard(context);
+  const showOnStartup = vscode.workspace.getConfiguration('hangar').get<boolean>('showOnStartup', true);
+  if (showOnStartup) {
+    openDashboard(context);
+  }
 }
 
 async function openDashboard(context: vscode.ExtensionContext) {
@@ -93,8 +95,16 @@ async function openDashboard(context: vscode.ExtensionContext) {
     const favorites = context.globalState.get<string[]>(FAVORITES_KEY, []);
     const theme = context.globalState.get<string>(THEME_KEY, DEFAULT_THEME);
     const uiState = context.globalState.get<object>(UI_STATE_KEY, {});
+    const cfg = vscode.workspace.getConfiguration('hangar');
+    const config = {
+      chipAction: cfg.get<string>('chipAction', 'new-window'),
+      clickAction: cfg.get<string>('clickAction', 'replace'),
+      maxRecents: cfg.get<number>('maxRecents', 6),
+      cardSize: cfg.get<string>('cardSize', 'normal'),
+      showGitInfo: cfg.get<boolean>('showGitInfo', true),
+    };
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
-    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), vscode.workspace.name);
+    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, vscode.workspace.name);
     enrichProjects(projects, panel);
   };
 
@@ -178,7 +188,7 @@ async function openDashboard(context: vscode.ExtensionContext) {
 
 function trimRecents(recents: Recents): Recents {
   return Object.fromEntries(
-    Object.entries(recents).sort((a, b) => b[1] - a[1]).slice(0, RECENTS_MAX)
+    Object.entries(recents).sort((a, b) => b[1] - a[1]).slice(0, 20)
   );
 }
 
@@ -305,14 +315,16 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, workspaceName?: string): string {
+type HangarConfig = { chipAction: string; clickAction: string; maxRecents: number; cardSize: string; showGitInfo: boolean };
+
+function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, workspaceName?: string): string {
 
   const displayName = workspaceName ?? 'hangar';
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
   const recentProjects = projects
     .filter(p => p.lastOpened > 0)
     .sort((a, b) => b.lastOpened - a.lastOpened)
-    .slice(0, RECENTS_MAX);
+    .slice(0, config.maxRecents);
 
   const HANGARS_JSON = JSON.stringify(hangars);
   const FAVORITES_JSON = JSON.stringify(favorites);
@@ -329,7 +341,7 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
 <title>${esc(displayName)}</title>
 <link rel="stylesheet" href="${styleUri}">
 </head>
-<body data-theme="${esc(theme)}">
+<body data-theme="${esc(theme)}" data-card-size="${esc(config.cardSize)}">
 
 <div class="topbar">
   <div class="header">
@@ -362,7 +374,8 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
     <span class="kbd">/</span> search &nbsp;
     <span class="kbd">esc</span> clear &nbsp;
     <span class="kbd">r</span> refresh &nbsp;
-    <span class="kbd">⌘+click</span> new window
+    <span class="kbd">click</span> ${config.chipAction === 'new-window' ? 'new window' : 'replace'} &nbsp;
+    <span class="kbd">⌘+click</span> ${config.clickAction === 'new-window' ? 'new window' : 'replace'}
   </div>
   <div id="stats"></div>
   <div class="muted-time">v1.1.0</div>
@@ -382,6 +395,7 @@ const SORTS  = ${SORTS_JSON};
 const HANGARS = ${HANGARS_JSON};
 const favSet = new Set(${FAVORITES_JSON});
 const _saved = ${UI_STATE_JSON};
+const CONFIG = ${JSON.stringify(config)};
 
 // working copies with async enrichment fields
 const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null }));
@@ -527,7 +541,7 @@ function cardHtml(p, q) {
     ? '<span class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</span>'
     : '';
 
-  const commitsBadge = p.hasGit
+  const commitsBadge = p.hasGit && CONFIG.showGitInfo
     ? '<span class="commits-badge" data-path="' + pa + '">◈</span>'
     : '';
 
@@ -541,7 +555,7 @@ function cardHtml(p, q) {
 
   // last commit row
   let commitRow = '';
-  if (p.hasGit) {
+  if (p.hasGit && CONFIG.showGitInfo) {
     if (p.commits && p.commits.length) {
       const c = p.commits[0];
       commitRow = '<div class="commit-row">' +
@@ -760,7 +774,11 @@ function renderHangarTabs() {
 }
 
 // ── actions ──────────────────────────────────────────────────
-function openCard(ev, p)    { vscode.postMessage({ command: 'openProject', path: p, newWindow: true }); }
+function openCard(ev, p)    {
+  const isModified = ev.metaKey || ev.ctrlKey;
+  const action = isModified ? CONFIG.clickAction : CONFIG.chipAction;
+  vscode.postMessage({ command: 'openProject', path: p, newWindow: action === 'new-window' });
+}
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
