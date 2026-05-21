@@ -313,6 +313,7 @@ function getHtml(projects: Project[], projectsDir: string, theme: string, styleU
     <span class="kbd">⌘+click</span> new window
   </div>
   <div id="stats"></div>
+  <div class="muted-time">v1.1.0</div>
 </div>
 
 <!-- global tooltip (JS-positioned) -->
@@ -384,9 +385,26 @@ function esc(s) {
 
 function highlight(name, q) {
   if (!q) return esc(name);
-  const i = name.toLowerCase().indexOf(q.toLowerCase());
-  if (i < 0) return esc(name);
-  return esc(name.slice(0, i)) + '<span class="match">' + esc(name.slice(i, i + q.length)) + '</span>' + esc(name.slice(i + q.length));
+  const tokens = q.trim().split(/\\s+/).filter(Boolean);
+  if (!tokens.length) return esc(name);
+  // mark ranges to highlight
+  const lower = name.toLowerCase();
+  const marks = new Uint8Array(name.length);
+  tokens.forEach(t => {
+    let pos = 0;
+    while ((pos = lower.indexOf(t.toLowerCase(), pos)) !== -1) {
+      marks.fill(1, pos, pos + t.length);
+      pos += t.length;
+    }
+  });
+  let out = '', inMark = false;
+  for (let i = 0; i < name.length; i++) {
+    if (marks[i] && !inMark)  { out += '<span class="match">'; inMark = true; }
+    if (!marks[i] && inMark)  { out += '</span>'; inMark = false; }
+    out += esc(name[i]);
+  }
+  if (inMark) out += '</span>';
+  return out;
 }
 
 // ── tooltip ─────────────────────────────────────────────────
@@ -486,11 +504,11 @@ function cardHtml(p, q) {
 
 // ── filtering + sorting ──────────────────────────────────────
 function filtered() {
-  const q = state.query.toLowerCase().trim();
+  const tokens = state.query.toLowerCase().trim().split(/\\s+/).filter(Boolean);
   return projects.filter(p => {
     if (state.gitOnly && !p.hasGit) return false;
     if (state.activeGroup && p.group !== state.activeGroup) return false;
-    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (tokens.length && !tokens.every(t => p.name.toLowerCase().includes(t))) return false;
     return true;
   });
 }
