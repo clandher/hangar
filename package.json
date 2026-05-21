@@ -1,6 +1,6 @@
 {
-  "version": "1.5.0",
-  "name": "hangar",
+  "version": "1.6.0",
+  "name": "hangar-directories",
   "publisher": "clandher",
   "displayName": "Hangar",
   "description": "Your local projects, always within reach.",
