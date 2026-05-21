@@ -60,6 +60,10 @@ export async function activate(context: vscode.ExtensionContext) {
     await context.globalState.update(HANGARS_KEY, hangars);
   }
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('hangar.open', () => openDashboard(context))
+  );
+
   openDashboard(context);
 }
 
