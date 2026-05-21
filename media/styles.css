@@ -144,6 +144,20 @@ html, body {
 }
 .htab-add:hover { color: var(--accent); border-color: var(--accent-dim); }
 
+/* star / favorite button inside card actions */
+.star-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 1px 4px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+.star-btn:hover { color: var(--accent); }
+.star-btn.starred { color: var(--accent); }
+
 /* ============================================================
    topbar
    ============================================================ */

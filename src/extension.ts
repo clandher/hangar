@@ -8,6 +8,7 @@ type Commit = { sha: string; author: string; ts: number; message: string };
 type Project = {
   name: string;
   path: string;
+  hangar: string;
   group: string;
   subgroup: string | null;
   mtime: number;
@@ -27,7 +28,8 @@ type Hangar = { name: string; path: string };
 const RECENTS_KEY = 'recents';
 const THEME_KEY = 'theme';
 const HANGARS_KEY = 'hangars';
-const ACTIVE_HANGAR_KEY = 'activeHangar';
+const FAVORITES_KEY = 'favorites';
+const UI_STATE_KEY = 'uiState';
 const DEFAULT_THEME = 'terminal';
 const RECENTS_MAX = 8;
 const CONCURRENCY = 8;
@@ -82,16 +84,13 @@ async function openDashboard(context: vscode.ExtensionContext) {
 
   const render = () => {
     const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
-    const activeIdx = Math.min(
-      context.globalState.get<number>(ACTIVE_HANGAR_KEY, 0),
-      hangars.length - 1
-    );
     if (!hangars.length) return;
-    const projectsDir = hangars[activeIdx].path;
     const recents = context.globalState.get<Recents>(RECENTS_KEY, {});
+    const favorites = context.globalState.get<string[]>(FAVORITES_KEY, []);
     const theme = context.globalState.get<string>(THEME_KEY, DEFAULT_THEME);
-    const projects = getProjects(projectsDir, recents);
-    panel.webview.html = getHtml(projects, hangars, activeIdx, theme, styleUri.toString(), vscode.workspace.name);
+    const uiState = context.globalState.get<object>(UI_STATE_KEY, {});
+    const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
+    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), vscode.workspace.name);
     enrichProjects(projects, panel);
   };
 
@@ -106,11 +105,6 @@ async function openDashboard(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(msg.path), msg.newWindow === true);
     }
 
-    if (msg.command === 'switchHangar') {
-      await context.globalState.update(ACTIVE_HANGAR_KEY, msg.index);
-      render();
-    }
-
     if (msg.command === 'addHangar') {
       const selected = await vscode.window.showOpenDialog({
         canSelectFiles: false,
@@ -122,20 +116,19 @@ async function openDashboard(context: vscode.ExtensionContext) {
       const p = selected[0].fsPath;
       const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
       if (hangars.some(h => h.path === p)) return;
-      const newHangars = [...hangars, { name: path.basename(p), path: p }];
-      await context.globalState.update(HANGARS_KEY, newHangars);
-      await context.globalState.update(ACTIVE_HANGAR_KEY, newHangars.length - 1);
+      await context.globalState.update(HANGARS_KEY, [...hangars, { name: path.basename(p), path: p }]);
       render();
     }
 
     if (msg.command === 'removeHangar') {
       const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
       if (hangars.length <= 1) return;
-      const newHangars = hangars.filter((_, i) => i !== msg.index);
-      const activeIdx = context.globalState.get<number>(ACTIVE_HANGAR_KEY, 0);
-      const newActive = Math.min(activeIdx, newHangars.length - 1);
-      await context.globalState.update(HANGARS_KEY, newHangars);
-      await context.globalState.update(ACTIVE_HANGAR_KEY, newActive);
+      const target = hangars[msg.index];
+      const confirm = await vscode.window.showWarningMessage(
+        `Remove hangar "${target.name}"?`, { modal: true }, 'Remove'
+      );
+      if (confirm !== 'Remove') return;
+      await context.globalState.update(HANGARS_KEY, hangars.filter((_, i) => i !== msg.index));
       render();
     }
 
@@ -158,6 +151,19 @@ async function openDashboard(context: vscode.ExtensionContext) {
       cp.exec(`open -a "IntelliJ IDEA" "${msg.path.replace(/"/g, '\\"')}"`);
     }
 
+    if (msg.command === 'toggleFavorite') {
+      const favs = context.globalState.get<string[]>(FAVORITES_KEY, []);
+      const next = favs.includes(msg.path)
+        ? favs.filter(f => f !== msg.path)
+        : [...favs, msg.path];
+      await context.globalState.update(FAVORITES_KEY, next);
+      panel.webview.postMessage({ command: 'favoritesUpdated', favorites: next });
+    }
+
+    if (msg.command === 'saveState') {
+      await context.globalState.update(UI_STATE_KEY, msg.state);
+    }
+
     if (msg.command === 'setTheme') {
       await context.globalState.update(THEME_KEY, msg.theme);
       render();
@@ -172,7 +178,7 @@ function trimRecents(recents: Recents): Recents {
   );
 }
 
-function getProjects(projectsDir: string, recents: Recents): Project[] {
+function getProjects(projectsDir: string, recents: Recents, hangarName: string = ''): Project[] {
 
   let dirs: string[];
   try { dirs = fs.readdirSync(projectsDir); } catch { return []; }
@@ -194,6 +200,7 @@ function getProjects(projectsDir: string, recents: Recents): Project[] {
       return {
         name,
         path: fullPath,
+        hangar: hangarName,
         group,
         subgroup,
         mtime: stat.mtimeMs,
@@ -294,11 +301,9 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function getHtml(projects: Project[], hangars: Hangar[], activeIdx: number, theme: string, styleUri: string, workspaceName?: string): string {
+function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, workspaceName?: string): string {
 
-  const activeHangar = hangars[activeIdx];
-  const projectsDir = activeHangar.path;
-  const displayName = workspaceName ?? activeHangar.name;
+  const displayName = workspaceName ?? 'hangar';
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
   const recentProjects = projects
     .filter(p => p.lastOpened > 0)
@@ -306,7 +311,8 @@ function getHtml(projects: Project[], hangars: Hangar[], activeIdx: number, them
     .slice(0, RECENTS_MAX);
 
   const HANGARS_JSON = JSON.stringify(hangars);
-  const ACTIVE_IDX_JSON = JSON.stringify(activeIdx);
+  const FAVORITES_JSON = JSON.stringify(favorites);
+  const UI_STATE_JSON = JSON.stringify(uiState);
 
   // passed to webview JS as data
   const THEMES_JSON = JSON.stringify(['terminal', 'amber', 'synthwave', 'paper']);
@@ -327,7 +333,7 @@ function getHtml(projects: Project[], hangars: Hangar[], activeIdx: number, them
       <span class="prompt">~/</span>${esc(displayName)}<span class="cursor"></span>
     </div>
     <div class="meta">
-      <span class="path" title="${esc(projectsDir)}">${esc(projectsDir)}</span>
+      <span class="path">${projects.length} projects</span>
       <button onclick="refresh()">↺</button>
       <button id="theme-cycle" class="cycle-btn">theme: ${esc(theme)} ▸</button>
     </div>
@@ -370,7 +376,8 @@ const groups = ${JSON.stringify(groups)};
 const THEMES = ${THEMES_JSON};
 const SORTS  = ${SORTS_JSON};
 const HANGARS = ${HANGARS_JSON};
-let activeHangarIdx = ${ACTIVE_IDX_JSON};
+const favSet = new Set(${FAVORITES_JSON});
+const _saved = ${UI_STATE_JSON};
 
 // working copies with async enrichment fields
 const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null }));
@@ -380,7 +387,24 @@ const byPath = {};
 projects.forEach(p => { byPath[p.path] = p; });
 recents.forEach(p => { byPath[p.path] = byPath[p.path] || p; });
 
-const state = { query: '', sort: 'recent', activeGroup: null, gitOnly: false };
+const state = {
+  query: '',
+  sort: _saved.sort || 'recent',
+  activeGroup: _saved.activeGroup || null,
+  gitOnly: _saved.gitOnly || false,
+  hangarFilter: _saved.hangarFilter || null
+};
+const hangarStates = _saved.hangarStates || {};
+
+function saveState() {
+  vscode.postMessage({ command: 'saveState', state: {
+    sort: state.sort,
+    activeGroup: state.activeGroup,
+    gitOnly: state.gitOnly,
+    hangarFilter: state.hangarFilter,
+    hangarStates
+  }});
+}
 
 const $q         = document.getElementById('q');
 const $count     = document.getElementById('count');
@@ -503,6 +527,9 @@ function cardHtml(p, q) {
     ? '<span class="commits-badge" data-path="' + pa + '">◈</span>'
     : '';
 
+  const isFav = favSet.has(p.path);
+  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '★' : '☆') + '</button>';
+
   const isJava = p.stack === 'java' || p.stack === 'gradle';
   const vscBtn     = '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>';
   const intellijBtn= '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + pa + '\\')">intellij</button>';
@@ -531,7 +558,7 @@ function cardHtml(p, q) {
           <span class="tag">\${esc(p.group)}</span>
           \${stack}
         </div>
-        <div class="actions">\${openBtn}</div>
+        <div class="actions">\${starBtn}\${openBtn}</div>
       </div>
       <div class="name">\${highlight(p.name, q)}</div>
       <div class="row">
@@ -551,6 +578,7 @@ function filtered() {
   const tokens = state.query.toLowerCase().trim().split(/\\s+/).filter(Boolean);
   return projects.filter(p => {
     if (state.gitOnly && !p.hasGit) return false;
+    if (state.hangarFilter && p.hangar !== state.hangarFilter) return false;
     if (state.activeGroup && p.group !== state.activeGroup) return false;
     if (tokens.length && !tokens.every(t => p.name.toLowerCase().includes(t))) return false;
     return true;
@@ -576,15 +604,18 @@ function sorted(list) {
 
 // ── render ───────────────────────────────────────────────────
 function renderChips() {
+  const scoped = state.hangarFilter ? projects.filter(p => p.hangar === state.hangarFilter) : projects;
   const counts = {};
-  projects.forEach(p => { counts[p.group] = (counts[p.group]||0) + 1; });
+  scoped.forEach(p => { counts[p.group] = (counts[p.group]||0) + 1; });
+  const scopedGroups = Array.from(new Set(scoped.map(p => p.group))).sort();
   $chips.innerHTML =
-    '<div class="chip ' + (state.activeGroup === null ? 'active' : '') + '" data-group="">all<span class="n">' + projects.length + '</span></div>' +
-    groups.map(g => '<div class="chip ' + (state.activeGroup === g ? 'active' : '') + '" data-group="' + esc(g) + '">' + esc(g) + '<span class="n">' + (counts[g]||0) + '</span></div>').join('');
+    '<div class="chip ' + (state.activeGroup === null ? 'active' : '') + '" data-group="">all<span class="n">' + scoped.length + '</span></div>' +
+    scopedGroups.map(g => '<div class="chip ' + (state.activeGroup === g ? 'active' : '') + '" data-group="' + esc(g) + '">' + esc(g) + '<span class="n">' + (counts[g]||0) + '</span></div>').join('');
 
   $chips.querySelectorAll('.chip').forEach(el => {
     el.addEventListener('click', () => {
       state.activeGroup = el.getAttribute('data-group') || null;
+      saveState();
       renderChips();
       render();
     });
@@ -616,10 +647,20 @@ function render() {
 
   let html = '';
 
+  // favorites section
+  const favProjects = projects
+    .filter(p => favSet.has(p.path) && (!state.hangarFilter || p.hangar === state.hangarFilter))
+    .map(p => byPath[p.path] || p);
+  if (favProjects.length && !state.query && !state.activeGroup && !state.gitOnly) {
+    html += '<section><div class="section-head"><h2>★ favorites</h2><span class="dim">' + favProjects.length + '</span></div>';
+    html += '<div class="grid">' + favProjects.map(p => cardHtml(p, '')).join('') + '</div></section>';
+  }
+
   // recents section
-  if (recents.length && !state.query && !state.activeGroup && !state.gitOnly) {
-    html += '<section><div class="section-head"><h2>recents</h2><span class="dim">' + recents.length + '</span><div class="spacer"></div><span class="action" onclick="clearRecents()">clear</span></div>';
-    html += '<div class="grid">' + recents.map(p => cardHtml(p, '')).join('') + '</div></section>';
+  const visibleRecents = recents.filter(p => !state.hangarFilter || p.hangar === state.hangarFilter);
+  if (visibleRecents.length && !state.query && !state.activeGroup && !state.gitOnly) {
+    html += '<section><div class="section-head"><h2>recents</h2><span class="dim">' + visibleRecents.length + '</span><div class="spacer"></div><span class="action" onclick="clearRecents()">clear</span></div>';
+    html += '<div class="grid">' + visibleRecents.map(p => cardHtml(p, '')).join('') + '</div></section>';
   }
 
   const title = state.activeGroup || (state.gitOnly ? 'git-tracked' : 'all projects');
@@ -662,9 +703,14 @@ window.addEventListener('message', ev => {
   if (msg && msg.command === 'enrich') {
     const p = byPath[msg.path];
     if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; }
-    // also update recents copy
     const r = recents.find(x => x.path === msg.path);
     if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; }
+    render();
+  }
+  if (msg && msg.command === 'favoritesUpdated') {
+    msg.favorites.forEach(f => favSet.add(f));
+    // remove unfavorited paths
+    [...favSet].forEach(f => { if (!msg.favorites.includes(f)) favSet.delete(f); });
     render();
   }
 });
@@ -672,8 +718,9 @@ window.addEventListener('message', ev => {
 // ── hangar tabs ──────────────────────────────────────────────
 function renderHangarTabs() {
   const $tabs = document.getElementById('hangar-tabs');
-  let html = HANGARS.map((h, i) =>
-    '<div class="htab' + (i === activeHangarIdx ? ' active' : '') + '" data-idx="' + i + '">' +
+  let html = '<div class="htab' + (!state.hangarFilter ? ' active' : '') + '" data-hangar="">all</div>';
+  html += HANGARS.map((h, i) =>
+    '<div class="htab' + (state.hangarFilter === h.name ? ' active' : '') + '" data-hangar="' + esc(h.name) + '" data-idx="' + i + '">' +
     esc(h.name) +
     (HANGARS.length > 1 ? '<span class="htab-remove" data-idx="' + i + '">×</span>' : '') +
     '</div>'
@@ -681,10 +728,20 @@ function renderHangarTabs() {
   html += '<div class="htab htab-add" id="htab-add">+</div>';
   $tabs.innerHTML = html;
 
-  $tabs.querySelectorAll('.htab[data-idx]').forEach(el => {
+  $tabs.querySelectorAll('.htab[data-hangar]').forEach(el => {
     el.addEventListener('click', e => {
       if (e.target.classList.contains('htab-remove')) return;
-      vscode.postMessage({ command: 'switchHangar', index: parseInt(el.getAttribute('data-idx')) });
+      // save current group for the current hangar
+      hangarStates[state.hangarFilter ?? ''] = state.activeGroup;
+      state.hangarFilter = el.getAttribute('data-hangar') || null;
+      // restore saved group for new hangar, validate it still exists
+      const saved = hangarStates[state.hangarFilter ?? ''] ?? null;
+      const scopedGroups = new Set((state.hangarFilter ? projects.filter(p => p.hangar === state.hangarFilter) : projects).map(p => p.group));
+      state.activeGroup = saved && scopedGroups.has(saved) ? saved : null;
+      saveState();
+      renderHangarTabs();
+      renderChips();
+      render();
     });
   });
   $tabs.querySelectorAll('.htab-remove').forEach(el => {
@@ -705,6 +762,7 @@ function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', pa
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
 function refresh()        { vscode.postMessage({ command: 'refresh' }); }
 function clearRecents()   { vscode.postMessage({ command: 'clearRecents' }); }
+function toggleFavorite(p){ vscode.postMessage({ command: 'toggleFavorite', path: p }); }
 
 // ── card ⌘+click → open in new window ────────────────────────
 $main.addEventListener('click', e => {
@@ -731,6 +789,7 @@ $sortCycle.addEventListener('click', () => {
   const i = (SORTS.indexOf(state.sort) + 1) % SORTS.length;
   state.sort = SORTS[i];
   $sortCycle.textContent = 'sort: ' + state.sort + ' ▸';
+  saveState();
   render();
 });
 
@@ -747,8 +806,10 @@ $themeCycle.addEventListener('click', () => {
 $gitToggle.addEventListener('click', () => {
   state.gitOnly = !state.gitOnly;
   $gitToggle.classList.toggle('active', state.gitOnly);
+  saveState();
   render();
 });
+
 
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== $q) {
@@ -759,6 +820,10 @@ document.addEventListener('keydown', e => {
     refresh();
   }
 });
+
+// restore button labels from saved state
+$sortCycle.textContent = 'sort: ' + state.sort + ' ▸';
+$gitToggle.classList.toggle('active', state.gitOnly);
 
 renderHangarTabs();
 renderChips();
