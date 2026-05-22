@@ -246,6 +246,25 @@ async function openDashboard(context: vscode.ExtensionContext) {
       terminal.show();
     }
 
+    if (msg.command === 'syncProject') {
+      const projectBranches = context.globalState.get<Record<string, string>>(PROJECT_BRANCHES_KEY, {});
+      const baseBranch = vscode.workspace.getConfiguration('hangar').get<string>('baseBranch', '');
+      const branchForProject = projectBranches[msg.path] ?? baseBranch;
+      // fetch first, then re-enrich this single project
+      panel.webview.postMessage({ command: 'syncStart', path: msg.path });
+      await run('git fetch origin', msg.path);
+      const [sizeKb, commits, isDirty, aheadBehind] = await Promise.all([
+        getSizeKb(msg.path),
+        getCommits(msg.path),
+        getIsDirty(msg.path),
+        getAheadBehind(msg.path, branchForProject)
+      ]);
+      const ahead  = aheadBehind?.ahead  ?? null;
+      const behind = aheadBehind?.behind ?? null;
+      const abRef  = aheadBehind?.ref    ?? null;
+      try { panel.webview.postMessage({ command: 'enrich', path: msg.path, sizeKb, commits, isDirty, ahead, behind, abRef }); } catch { /* panel disposed */ }
+    }
+
     if (msg.command === 'openHangarIgnore') {
       const filePath = path.join(msg.hangarPath, '.hangarignore');
       if (!fs.existsSync(filePath)) {
@@ -426,6 +445,11 @@ async function getAheadBehind(p: string, baseBranch: string): Promise<{ ahead: n
   if (!ref) {
     ref = (await run('git rev-parse --abbrev-ref @{u}', p)).trim();
     if (!ref || ref.includes('fatal')) return null;
+  } else if (!ref.startsWith('origin/')) {
+    // local branch may be stale — prefer the remote-tracking counterpart if it exists
+    const remoteRef = `origin/${ref}`;
+    const verified = (await run(`git rev-parse --verify --quiet refs/remotes/${remoteRef}`, p)).trim();
+    if (verified) ref = remoteRef;
   }
   const out = await run(`git rev-list --left-right --count HEAD...${ref}`, p);
   const m = out.trim().match(/^(\d+)\s+(\d+)$/);
@@ -442,6 +466,8 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, c
       if (cancel.cancelled) break;
       const p = queue.shift();
       if (!p) break;
+      if (p.hasGit) await run('git fetch origin', p.path);
+      if (cancel.cancelled) break;
       const [sizeKb, commits, isDirty, aheadBehind] = await Promise.all([
         getSizeKb(p.path),
         p.hasGit ? getCommits(p.path) : Promise.resolve(null),
@@ -710,56 +736,56 @@ function hideTooltip() {
 // ── card html ────────────────────────────────────────────────
 function cardHtml(p, q) {
   const pa = esc(p.path);
-  const branch  = p.branch ? '<span class="branch">' + esc(p.branch) + '</span>' : '';
-  const stack   = p.stack  ? '<span class="stack">'  + esc(p.stack)  + '</span>' : '';
-  // show only lastOpened (most meaningful); fall back to mtime labeled "mod"
-  const timeVal = p.lastOpened
-    ? '<span class="recent" title="last opened">↺ ' + fmtTime(p.lastOpened) + '</span>'
-    : '<span class="muted-time" title="folder modified">' + fmtTime(p.mtime) + '</span>';
-  const size    = p.sizeKb != null
-    ? '<span class="size" title="disk size">' + fmtSize(p.sizeKb) + '</span>'
-    : '<span class="size pending" title="disk size">…</span>';
 
-  const remote = p.remoteUrl
-    ? '<span class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</span>'
-    : '';
+  // tags row
+  const stack = p.stack ? '<span class="stack">' + esc(p.stack) + '</span>' : '';
 
-  const commitsBadge = p.hasGit && CONFIG.showGitInfo
-    ? '<span class="commits-badge" data-path="' + pa + '">◈</span>'
-    : '';
-
-  const dirtyBadge = p.isDirty === true
-    ? '<span class="dirty-badge" title="uncommitted changes">●</span>'
-    : p.isDirty === null && p.hasGit
-      ? '<span class="dirty-badge pending" title="checking status…"></span>'
-      : '';
-
-  const abBase = p.abRef || CONFIG.baseBranch || 'upstream';
-  const abTip = [
-    p.ahead  ? '↑' + p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' you have not in ' + abBase : '',
-    p.behind ? '↓' + p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' in ' + abBase + ' you lack' : '',
-    'vs ' + abBase
-  ].filter(Boolean).join(' · ');
-  const aheadBehind = p.hasGit && (p.ahead || p.behind)
-    ? '<span class="ahead-behind" title="' + esc(abTip) + '">' +
-      (p.ahead  ? '<span class="ab-ahead">↑' + p.ahead  + '</span>' : '') +
-      (p.behind ? '<span class="ab-behind">↓' + p.behind + '</span>' : '') +
-      '</span>'
-    : '';
-
+  // action buttons
   const isFav = favSet.has(p.path);
-  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '★' : '☆') + '</button>';
+  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Unfavorite' : 'Favorite') + '">' + (isFav ? '★' : '☆') + '</button>';
   const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + pa + '\\')" title="Open in terminal">⌨</button>';
-  const branchOverride = PROJECT_BRANCHES[p.path];
-  const branchBtnTitle = branchOverride ? 'Comparing vs ' + branchOverride + ' (click to change)' : 'Set comparison branch';
-  const branchBtn = p.hasGit ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + pa + '\\')" title="' + esc(branchBtnTitle) + '">⎇</button>' : '';
-
+  const syncBtn = p.hasGit ? '<button class="sync-btn" data-path="' + pa + '" onclick="event.stopPropagation(); syncProject(\\'' + pa + '\\')" title="git fetch + re-sync">⟳</button>' : '';
   const isJava = p.stack === 'java' || p.stack === 'gradle';
-  const vscBtn     = '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>';
-  const intellijBtn= '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + pa + '\\')">intellij</button>';
-  const openBtn    = isJava ? intellijBtn + vscBtn : '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">open</button>';
+  const openBtn = isJava
+    ? '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + pa + '\\')">ij</button><button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>'
+    : '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">open</button>';
 
-  // last commit row
+  // git status badges — explicit labels, no arrows
+  const dirtyDot = p.isDirty === true
+    ? '<span class="dirty-dot" title="uncommitted changes">●</span>'
+    : '';
+
+  const abBase = p.abRef || CONFIG.baseBranch || '';
+  const pullTip = abBase ? p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' in ' + abBase + ' you need to pull' : '';
+  const pushTip = abBase ? p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' not yet pushed to ' + abBase : '';
+  const needPull = p.behind > 0  ? '<span class="need-pull" title="' + esc(pullTip) + '">pull</span>' : '';
+  const needPush = p.ahead  > 0  ? '<span class="need-push" title="' + esc(pushTip) + '">push</span>' : '';
+
+  // branch + compare button
+  const branchOverride = PROJECT_BRANCHES[p.path];
+  const branchBtnTip = branchOverride ? 'vs ' + branchOverride + ' (click to change)' : 'Set comparison branch';
+  const branchBtn = p.hasGit
+    ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + pa + '\\')" title="' + esc(branchBtnTip) + '">⎇</button>'
+    : '';
+  const branchName = p.branch ? '<span class="branch">⎇ ' + esc(p.branch) + '</span>' : '';
+
+  // remote link
+  const remoteBtn = p.remoteUrl
+    ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</button>'
+    : '';
+
+  // meta: time + size
+  const timeVal = p.lastOpened
+    ? fmtTime(p.lastOpened)
+    : fmtTime(p.mtime);
+  const sizeVal = p.sizeKb != null ? fmtSize(p.sizeKb) : '…';
+
+  // commits badge (hover tooltip)
+  const commitsBadge = p.hasGit && CONFIG.showGitInfo
+    ? '<span class="commits-badge" data-path="' + pa + '" title="Recent commits">commits</span>'
+    : '';
+
+  // last commit line
   let commitRow = '';
   if (p.hasGit && CONFIG.showGitInfo) {
     if (p.commits && p.commits.length) {
@@ -767,11 +793,10 @@ function cardHtml(p, q) {
       commitRow = '<div class="commit-row">' +
         '<span class="commit-sha">' + esc(c.sha) + '</span>' +
         '<span class="commit-msg">' + esc(c.message) + '</span>' +
-        '<span class="commit-author">' + esc(c.author) + '</span>' +
-        '<span class="commit-when">' + fmtTime(c.ts) + '</span>' +
+        '<span class="commit-meta">' + esc(c.author) + ' · ' + fmtTime(c.ts) + '</span>' +
         '</div>';
     } else {
-      commitRow = '<div class="commit-row pending">loading commit…</div>';
+      commitRow = '<div class="commit-row pending">loading…</div>';
     }
   }
 
@@ -782,19 +807,22 @@ function cardHtml(p, q) {
           <span class="tag">\${esc(p.group)}</span>
           \${stack}
         </div>
-        <div class="actions">\${starBtn}\${branchBtn}\${termBtn}\${openBtn}</div>
       </div>
       <div class="name">\${highlight(p.name, q)}</div>
-      <div class="row">
-        \${branch}
-        \${dirtyBadge}
-        \${aheadBehind}
-        \${commitsBadge}
-        \${remote}
-        \${timeVal}
-        \${size}
+      <div class="card-git">
+        \${branchName}
+        \${dirtyDot}
+        \${needPull}
+        \${needPush}
       </div>
       \${commitRow}
+      <div class="card-footer">
+        \${commitsBadge}
+        <span class="spacer"></span>
+        <span class="meta-time" title="last opened">\${timeVal}</span>
+        <span class="meta-size">\${sizeVal}</span>
+      </div>
+      <div class="actions">\${starBtn}\${syncBtn}\${termBtn}\${branchBtn}\${remoteBtn}\${openBtn}</div>
     </div>
   \`;
 }
@@ -940,6 +968,10 @@ window.addEventListener('message', ev => {
     if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; r.ahead = msg.ahead ?? null; r.behind = msg.behind ?? null; r.abRef = msg.abRef ?? null; }
     render();
   }
+  if (msg && msg.command === 'syncStart') {
+    const btn = document.querySelector('.sync-btn[data-path="' + msg.path + '"]');
+    if (btn) { btn.classList.add('syncing'); btn.textContent = '…'; }
+  }
   if (msg && msg.command === 'favoritesUpdated') {
     msg.favorites.forEach(f => favSet.add(f));
     // remove unfavorited paths
@@ -1005,6 +1037,7 @@ function openCard(ev, p)    {
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
 function openInTerminal(p) { vscode.postMessage({ command: 'openInTerminal', path: p }); }
 function setBaseBranch(p)  { vscode.postMessage({ command: 'setBaseBranch', path: p }); }
+function syncProject(p)    { vscode.postMessage({ command: 'syncProject', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
 function refresh()        { vscode.postMessage({ command: 'refresh' }); }

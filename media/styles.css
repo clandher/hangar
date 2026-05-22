@@ -181,9 +181,22 @@ html, body {
 }
 .term-btn:hover { color: var(--info); }
 
-.branch-btn {
+.sync-btn {
   background: none;
   border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 1px 4px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+.sync-btn:hover { color: var(--accent); }
+.sync-btn.syncing { color: var(--warn); opacity: 0.7; cursor: wait; }
+
+.branch-btn {
+  background: none;
+  border: 1px solid transparent;
   color: var(--muted);
   cursor: pointer;
   font-size: 13px;
@@ -192,7 +205,10 @@ html, body {
   transition: color 0.1s;
 }
 .branch-btn:hover { color: var(--info); }
-.branch-btn.active { color: var(--accent); }
+.branch-btn.active {
+  border-color: var(--border-2);
+  border-radius: 3px;
+}
 
 /* ============================================================
    topbar
@@ -412,19 +428,19 @@ section { margin-bottom: 32px; }
 
 .subgroup-label::before { content: '  ╴ '; opacity: 0.4; }
 
+/* ── card ── */
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
-  padding: 10px 12px 6px;
+  padding: 10px 12px 8px;
   cursor: default;
   position: relative;
-  transition: all 0.15s;
-  height: 131px;
-  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
   display: flex;
   flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
 }
-
 .card::before {
   content: '';
   position: absolute;
@@ -433,19 +449,16 @@ section { margin-bottom: 32px; }
   background: transparent;
   transition: background 0.15s;
 }
-
 .card:hover { border-color: var(--accent-dim); background: var(--panel-2); }
 .card:hover::before { background: var(--accent); }
 
-/* card header: tags + actions */
+/* header: tags + actions */
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 15px;
 }
-
 .card-tags {
   display: flex;
   align-items: center;
@@ -453,86 +466,86 @@ section { margin-bottom: 32px; }
   overflow: hidden;
   min-width: 0;
 }
-
-/* card name row */
-.card .name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg);
-  margin-bottom: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.card .tag {
+  font-size: 10px;
+  color: var(--accent-dim);
+  border: 1px solid var(--border-2);
+  padding: 1px 6px;
+  flex-shrink: 0;
 }
-
-.card .name .match { color: var(--accent); background: var(--accent-bg-strong); }
-
 .card .stack {
   font-size: 10px;
   color: var(--info);
   border: 1px solid var(--border-2);
   padding: 1px 5px;
   flex-shrink: 0;
-  text-transform: lowercase;
 }
 
-/* card meta rows */
-.card .row {
+/* project name */
+.card .name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card .name .match { color: var(--accent); background: var(--accent-bg-strong); }
+
+/* git status row: branch + dirty + need-pull/push */
+.card-git {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 10px;
-  color: var(--muted);
-  text-transform: lowercase;
-  flex-wrap: nowrap;
   overflow: hidden;
 }
-
-.card .row + .row { margin-top: 5px; }
-
-.card .tag {
-  font-size: 10px;
-  color: var(--accent-dim);
-  border: 1px solid var(--border-2);
-  padding: 1px 6px;
-}
-
 .card .branch {
-  font-size: 10px;
   color: var(--info);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 140px;
+  max-width: 160px;
   flex-shrink: 1;
   min-width: 0;
 }
-.card .branch::before { content: '⎇ '; }
-
-.card .recent { color: var(--accent); margin-left: auto; }
-
-.card .muted-time { color: var(--muted); margin-left: auto; }
-
-.card .size { color: var(--muted); }
-.card .size.pending { opacity: 0.35; }
+.card .dirty-dot {
+  color: var(--danger);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.card .need-pull {
+  font-size: 9px;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  padding: 1px 5px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+.card .need-push {
+  font-size: 9px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  padding: 1px 5px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
 
 /* last commit row */
 .card .commit-row {
-  margin-top: 12px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--border);
   display: flex;
   align-items: baseline;
   gap: 6px;
   font-size: 10px;
   color: var(--muted);
-  text-transform: none;
+  overflow: hidden;
 }
-
 .card .commit-row.pending { opacity: 0.3; }
-
-.card .commit-sha { color: var(--warn); flex-shrink: 0; }
-
+.card .commit-sha { color: var(--warn); flex-shrink: 0; font-size: 9px; }
 .card .commit-msg {
   color: var(--fg);
   overflow: hidden;
@@ -540,24 +553,22 @@ section { margin-bottom: 32px; }
   white-space: nowrap;
   flex: 1;
 }
+.card .commit-meta { color: var(--muted); flex-shrink: 0; font-size: 9px; }
 
-.card .commit-author { color: var(--info); flex-shrink: 0; }
-.card .commit-when { flex-shrink: 0; }
-
-/* remote icon button */
-.card .remote-btn {
-  display: inline-flex;
+/* footer: commits badge + meta */
+.card-footer {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  border: 1px solid var(--border-2);
-  padding: 1px 6px;
+  gap: 6px;
   font-size: 10px;
-  cursor: pointer;
-  transition: all 0.15s;
+  color: var(--muted);
+  margin-top: auto;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
 }
-
-.card .remote-btn:hover { color: var(--accent); border-color: var(--accent); }
+.card-footer .spacer { flex: 1; }
+.card .meta-time { color: var(--accent); }
+.card .meta-size { color: var(--muted); }
 
 /* commits badge */
 .card .commits-badge {
@@ -565,32 +576,33 @@ section { margin-bottom: 32px; }
   border: 1px solid var(--border-2);
   padding: 1px 6px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 9px;
   transition: all 0.15s;
   user-select: none;
 }
-
 .card .commits-badge:hover { color: var(--accent); border-color: var(--accent-dim); }
 
-.card .dirty-badge {
-  color: var(--danger);
-  font-size: 10px;
-  line-height: 1;
-  user-select: none;
+/* remote button */
+.card .remote-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  transition: color 0.1s;
 }
-.card .dirty-badge.pending { visibility: hidden; }
+.card .remote-btn:hover { color: var(--accent); }
 
-.card .ahead-behind { display: inline-flex; gap: 3px; font-size: 10px; }
-.card .ab-ahead  { color: var(--accent); }
-.card .ab-behind { color: var(--danger); }
-
-/* card actions (always visible, in card-header) */
+/* actions */
 .card .actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  justify-content: flex-end;
+  padding-top: 6px;
 }
-
 .card .actions button { padding: 2px 6px; font-size: 10px; }
 
 /* ============================================================
