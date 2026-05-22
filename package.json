@@ -21,6 +21,10 @@
       {
         "command": "hangar.open",
         "title": "Open Hangar"
+      },
+      {
+        "command": "hangar.resetStorage",
+        "title": "Hangar: Reset Storage"
       }
     ],
     "keybindings": [

@@ -44,23 +44,24 @@ export async function activate(context: vscode.ExtensionContext) {
     await context.globalState.update('projectsDir', undefined);
   }
 
-  let hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
-
-  if (!hangars.length) {
-    const selected = await vscode.window.showOpenDialog({
-      canSelectFiles: false,
-      canSelectFolders: true,
-      canSelectMany: false,
-      openLabel: 'Seleccionar carpeta de proyectos'
-    });
-    if (!selected || !selected[0]) return;
-    const p = selected[0].fsPath;
-    hangars = [{ name: path.basename(p), path: p }];
-    await context.globalState.update(HANGARS_KEY, hangars);
-  }
+  // no hangars: open dashboard anyway; it will show a warning
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('hangar.open', () => openDashboard(context))
+    vscode.commands.registerCommand('hangar.open', () => openDashboard(context)),
+    vscode.commands.registerCommand('hangar.resetStorage', async () => {
+      const confirm = await vscode.window.showWarningMessage(
+        'Reset all Hangar data? (hangars, recents, favorites, theme)', { modal: true }, 'Reset'
+      );
+      if (confirm !== 'Reset') return;
+      await Promise.all([
+        context.globalState.update(HANGARS_KEY, undefined),
+        context.globalState.update(RECENTS_KEY, undefined),
+        context.globalState.update(FAVORITES_KEY, undefined),
+        context.globalState.update(THEME_KEY, undefined),
+        context.globalState.update(UI_STATE_KEY, undefined),
+      ]);
+      vscode.window.showInformationMessage('Hangar storage cleared. Reload window to restart.');
+    })
   );
 
   const showOnStartup = vscode.workspace.getConfiguration('hangar').get<boolean>('showOnStartup', true);
@@ -90,7 +91,10 @@ async function openDashboard(context: vscode.ExtensionContext) {
 
   const render = () => {
     const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
-    if (!hangars.length) return;
+    if (!hangars.length) {
+      panel.webview.html = getNoHangarHtml(styleUri.toString());
+      return;
+    }
     const recents = context.globalState.get<Recents>(RECENTS_KEY, {});
     const favorites = context.globalState.get<string[]>(FAVORITES_KEY, []);
     const theme = context.globalState.get<string>(THEME_KEY, DEFAULT_THEME);
@@ -162,7 +166,11 @@ async function openDashboard(context: vscode.ExtensionContext) {
     }
 
     if (msg.command === 'openIntelliJ') {
-      cp.exec(`open -a "IntelliJ IDEA" "${msg.path.replace(/"/g, '\\"')}"`);
+      const p = msg.path.replace(/"/g, '\\"');
+      const cmd = process.platform === 'win32'
+        ? `start "" "IntelliJ IDEA" "${p}"`
+        : `open -a "IntelliJ IDEA" "${p}"`;
+      cp.exec(cmd);
     }
 
     if (msg.command === 'toggleFavorite') {
@@ -274,7 +282,15 @@ function run(cmd: string, cwd: string): Promise<string> {
 }
 
 async function getSizeKb(p: string): Promise<number | null> {
-  const out = await run(`du -sk "${p.replace(/"/g, '\\"')}"`, p);
+  const escaped = p.replace(/"/g, '\\"');
+  const cmd = process.platform === 'win32'
+    ? `powershell -Command "(Get-ChildItem -Recurse -Force '${p.replace(/'/g, "''")}' -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum"`
+    : `du -sk "${escaped}"`;
+  const out = await run(cmd, p);
+  if (process.platform === 'win32') {
+    const n = parseInt(out.trim(), 10);
+    return isNaN(n) ? null : Math.round(n / 1024);
+  }
   const m = out.match(/^(\d+)/);
   return m ? parseInt(m[1], 10) : null;
 }
@@ -316,6 +332,35 @@ function esc(s: string): string {
 }
 
 type HangarConfig = { chipAction: string; clickAction: string; maxRecents: number; cardSize: string; showGitInfo: boolean };
+
+function getNoHangarHtml(styleUri: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hangar</title>
+<link rel="stylesheet" href="${styleUri}">
+</head>
+<body data-theme="terminal">
+<div class="topbar">
+  <div class="header">
+    <div class="brand"><span class="prompt">~/</span>hangar<span class="cursor"></span></div>
+  </div>
+</div>
+<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:1rem;text-align:center;">
+  <div style="font-size:1.1rem;opacity:0.6;">no hangar selected</div>
+  <div style="opacity:0.4;font-size:0.85rem;max-width:340px;line-height:1.5;">
+    Select the folder where you keep your projects.<br>Hangar will list everything inside it as a project.
+  </div>
+  <button onclick="addHangar()" style="margin-top:0.5rem;">+ select projects folder</button>
+</div>
+<script>
+const vscode = acquireVsCodeApi();
+function addHangar() { vscode.postMessage({ command: 'addHangar' }); }
+</script>
+</body>
+</html>`;
+}
 
 function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, workspaceName?: string): string {
 
