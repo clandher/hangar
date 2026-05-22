@@ -34,7 +34,11 @@ const DEFAULT_THEME = 'terminal';
 const CONCURRENCY = 8;
 const ENRICH_TIMEOUT = 4000;
 
+let _activated = false;
+
 export async function activate(context: vscode.ExtensionContext) {
+  if (_activated) return;
+  _activated = true;
 
   // migrate legacy single-dir setting
   const legacyDir = context.globalState.get<string>('projectsDir');
@@ -322,7 +326,7 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel) {
         getSizeKb(p.path),
         p.hasGit ? getCommits(p.path) : Promise.resolve(null)
       ]);
-      panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits });
+      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits }); } catch { break; }
     }
   }
 
@@ -908,4 +912,4 @@ setTimeout(() => $q.focus(), 120);
 </html>`;
 }
 
-export function deactivate() {}
+export function deactivate() { _activated = false; }

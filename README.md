@@ -22,7 +22,7 @@ Hangar opens a fast, filterable dashboard of all your local projects — launch 
 
 | Action | Shortcut |
 |---|---|
-| Open Hangar | `⌘+Shift+H` / `Ctrl+Shift+H` |
+| Open Hangar | `⌘+Shift+R` / `Ctrl+Shift+R` |
 | Open project | Click **open** button on card |
 | Open in new window | `⌘+click` / `Ctrl+click` on card |
 | Search | `/` or click search bar |
