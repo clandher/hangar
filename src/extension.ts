@@ -34,6 +34,7 @@ const THEME_KEY = 'theme';
 const HANGARS_KEY = 'hangars';
 const FAVORITES_KEY = 'favorites';
 const UI_STATE_KEY = 'uiState';
+const PROJECT_BRANCHES_KEY = 'projectBranches';
 const DEFAULT_THEME = 'terminal';
 const CONCURRENCY = 8;
 const ENRICH_TIMEOUT = 4000;
@@ -164,9 +165,10 @@ async function openDashboard(context: vscode.ExtensionContext) {
     };
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
     const extVersion = context.extension.packageJSON.version as string;
-    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name);
+    const projectBranches = context.globalState.get<Record<string, string>>(PROJECT_BRANCHES_KEY, {});
+    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name, projectBranches);
     updateStatusBar(context);
-    enrichProjects(projects, panel, enrichCancel);
+    enrichProjects(projects, panel, enrichCancel, projectBranches);
   };
 
   // expose render for onDidChangeConfiguration hook
@@ -250,6 +252,24 @@ async function openDashboard(context: vscode.ExtensionContext) {
         fs.writeFileSync(filePath, '# .hangarignore — one folder name per line\n# Lines starting with # are comments\n');
       }
       vscode.window.showTextDocument(vscode.Uri.file(filePath));
+    }
+
+    if (msg.command === 'setBaseBranch') {
+      const branches = context.globalState.get<Record<string, string>>(PROJECT_BRANCHES_KEY, {});
+      const input = await vscode.window.showInputBox({
+        prompt: `Compare ${path.basename(msg.path)} against branch`,
+        value: branches[msg.path] ?? '',
+        placeHolder: 'develop, main, origin/develop… (empty = use upstream)'
+      });
+      if (input === undefined) return;
+      if (input === '') {
+        const updated = { ...branches };
+        delete updated[msg.path];
+        await context.globalState.update(PROJECT_BRANCHES_KEY, updated);
+      } else {
+        await context.globalState.update(PROJECT_BRANCHES_KEY, { ...branches, [msg.path]: input });
+      }
+      render();
     }
 
     if (msg.command === 'toggleFavorite') {
@@ -413,7 +433,7 @@ async function getAheadBehind(p: string, baseBranch: string): Promise<{ ahead: n
   return { ahead: parseInt(m[1], 10), behind: parseInt(m[2], 10), ref };
 }
 
-async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }) {
+async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }, projectBranches: Record<string, string> = {}) {
   const baseBranch = vscode.workspace.getConfiguration('hangar').get<string>('baseBranch', '');
   const queue = projects.slice();
 
@@ -426,7 +446,7 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, c
         getSizeKb(p.path),
         p.hasGit ? getCommits(p.path) : Promise.resolve(null),
         p.hasGit ? getIsDirty(p.path) : Promise.resolve(false),
-        p.hasGit ? getAheadBehind(p.path, baseBranch) : Promise.resolve(null)
+        p.hasGit ? getAheadBehind(p.path, projectBranches[p.path] ?? baseBranch) : Promise.resolve(null)
       ]);
       if (cancel.cancelled) break;
       const ahead  = aheadBehind?.ahead  ?? null;
@@ -478,7 +498,7 @@ function addHangar() { vscode.postMessage({ command: 'addHangar' }); }
 </html>`;
 }
 
-function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, version: string, workspaceName?: string): string {
+function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, version: string, workspaceName?: string, projectBranches: Record<string, string> = {}): string {
 
   const displayName = workspaceName ?? 'hangar';
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
@@ -490,6 +510,7 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
   const HANGARS_JSON = JSON.stringify(hangars);
   const FAVORITES_JSON = JSON.stringify(favorites);
   const UI_STATE_JSON = JSON.stringify(uiState);
+  const PROJECT_BRANCHES_JSON = JSON.stringify(projectBranches);
 
   // passed to webview JS as data
   const THEMES_JSON = JSON.stringify(['terminal', 'amber', 'synthwave', 'paper']);
@@ -557,6 +578,7 @@ const HANGARS = ${HANGARS_JSON};
 const favSet = new Set(${FAVORITES_JSON});
 const _saved = ${UI_STATE_JSON};
 const CONFIG = ${JSON.stringify(config)};
+const PROJECT_BRANCHES = ${PROJECT_BRANCHES_JSON};
 
 // working copies with async enrichment fields
 const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null, abRef: null }));
@@ -728,6 +750,9 @@ function cardHtml(p, q) {
   const isFav = favSet.has(p.path);
   const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '★' : '☆') + '</button>';
   const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + pa + '\\')" title="Open in terminal">⌨</button>';
+  const branchOverride = PROJECT_BRANCHES[p.path];
+  const branchBtnTitle = branchOverride ? 'Comparing vs ' + branchOverride + ' (click to change)' : 'Set comparison branch';
+  const branchBtn = p.hasGit ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + pa + '\\')" title="' + esc(branchBtnTitle) + '">⎇</button>' : '';
 
   const isJava = p.stack === 'java' || p.stack === 'gradle';
   const vscBtn     = '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>';
@@ -757,7 +782,7 @@ function cardHtml(p, q) {
           <span class="tag">\${esc(p.group)}</span>
           \${stack}
         </div>
-        <div class="actions">\${starBtn}\${termBtn}\${openBtn}</div>
+        <div class="actions">\${starBtn}\${branchBtn}\${termBtn}\${openBtn}</div>
       </div>
       <div class="name">\${highlight(p.name, q)}</div>
       <div class="row">
@@ -979,6 +1004,7 @@ function openCard(ev, p)    {
 }
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
 function openInTerminal(p) { vscode.postMessage({ command: 'openInTerminal', path: p }); }
+function setBaseBranch(p)  { vscode.postMessage({ command: 'setBaseBranch', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
 function refresh()        { vscode.postMessage({ command: 'refresh' }); }

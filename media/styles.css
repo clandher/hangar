@@ -181,6 +181,19 @@ html, body {
 }
 .term-btn:hover { color: var(--info); }
 
+.branch-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 1px 4px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+.branch-btn:hover { color: var(--info); }
+.branch-btn.active { color: var(--accent); }
+
 /* ============================================================
    topbar
    ============================================================ */
@@ -569,7 +582,7 @@ section { margin-bottom: 32px; }
 
 .card .ahead-behind { display: inline-flex; gap: 3px; font-size: 10px; }
 .card .ab-ahead  { color: var(--accent); }
-.card .ab-behind { color: var(--warn); }
+.card .ab-behind { color: var(--danger); }
 
 /* card actions (always visible, in card-header) */
 .card .actions {
