@@ -1,13 +1,20 @@
 {
-  "version": "1.8.0",
+  "version": "1.10.0",
   "name": "hangar-directories",
   "publisher": "clandher",
   "displayName": "Hangar",
   "description": "Your local projects, always within reach.",
   "license": "MIT",
   "icon": "media/icon.png",
-  "categories": ["Other"],
-  "keywords": ["projects", "dashboard", "launcher", "workspace"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "projects",
+    "dashboard",
+    "launcher",
+    "workspace"
+  ],
   "homepage": "https://github.com/clandher/hangar",
   "engines": {
     "vscode": "^1.90.0"
@@ -40,15 +47,27 @@
         "hangar.chipAction": {
           "type": "string",
           "default": "new-window",
-          "enum": ["new-window", "replace"],
-          "enumDescriptions": ["Open in a new VSCode window", "Replace current window"],
+          "enum": [
+            "new-window",
+            "replace"
+          ],
+          "enumDescriptions": [
+            "Open in a new VSCode window",
+            "Replace current window"
+          ],
           "description": "What the open chip/button does."
         },
         "hangar.clickAction": {
           "type": "string",
           "default": "replace",
-          "enum": ["new-window", "replace"],
-          "enumDescriptions": ["Open in a new VSCode window", "Replace current window"],
+          "enum": [
+            "new-window",
+            "replace"
+          ],
+          "enumDescriptions": [
+            "Open in a new VSCode window",
+            "Replace current window"
+          ],
           "description": "What ⌘+click (or Ctrl+click) does."
         },
         "hangar.showOnStartup": {
@@ -66,7 +85,11 @@
         "hangar.cardSize": {
           "type": "string",
           "default": "normal",
-          "enum": ["compact", "normal", "large"],
+          "enum": [
+            "compact",
+            "normal",
+            "large"
+          ],
           "description": "Size of project cards in the dashboard."
         },
         "hangar.showGitInfo": {
@@ -78,6 +101,11 @@
           "type": "boolean",
           "default": true,
           "description": "Reveal existing Hangar panel instead of opening a new one."
+        },
+        "hangar.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show project count in the status bar."
         }
       }
     }

@@ -20,6 +20,7 @@ type Project = {
   // populated async
   sizeKb: number | null;
   commits: Commit[] | null;
+  isDirty: boolean | null;
 };
 
 type Recents = Record<string, number>;
@@ -53,7 +54,6 @@ export async function activate(context: vscode.ExtensionContext) {
   _statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
   _statusBar.command = 'hangar.open';
   _statusBar.tooltip = 'Open Hangar';
-  _statusBar.show();
   context.subscriptions.push(_statusBar);
 
   updateStatusBar(context);
@@ -92,6 +92,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 function updateStatusBar(context: vscode.ExtensionContext) {
   if (!_statusBar) return;
+  const show = vscode.workspace.getConfiguration('hangar').get<boolean>('showStatusBar', true);
+  if (!show) { _statusBar.hide(); return; }
+  _statusBar.show();
   const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
   if (!hangars.length) {
     _statusBar.text = '⊹ hangar';
@@ -232,6 +235,11 @@ async function openDashboard(context: vscode.ExtensionContext) {
       cp.exec(cmd);
     }
 
+    if (msg.command === 'openInTerminal') {
+      const terminal = vscode.window.createTerminal({ name: path.basename(msg.path), cwd: msg.path });
+      terminal.show();
+    }
+
     if (msg.command === 'toggleFavorite') {
       const favs = context.globalState.get<string[]>(FAVORITES_KEY, []);
       const next = favs.includes(msg.path)
@@ -291,7 +299,8 @@ function getProjects(projectsDir: string, recents: Recents, hangarName: string =
         stack: detectStack(fullPath),
         remoteUrl: hasGit ? readRemoteUrl(gitPath) : null,
         sizeKb: null,
-        commits: null
+        commits: null,
+        isDirty: null
       } as Project;
     })
     .filter((p): p is Project => p !== null);
@@ -367,6 +376,11 @@ async function getCommits(p: string): Promise<Commit[] | null> {
   });
 }
 
+async function getIsDirty(p: string): Promise<boolean> {
+  const out = await run('git status --short', p);
+  return out.trim().length > 0;
+}
+
 async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }) {
   const queue = projects.slice();
 
@@ -375,12 +389,13 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, c
       if (cancel.cancelled) break;
       const p = queue.shift();
       if (!p) break;
-      const [sizeKb, commits] = await Promise.all([
+      const [sizeKb, commits, isDirty] = await Promise.all([
         getSizeKb(p.path),
-        p.hasGit ? getCommits(p.path) : Promise.resolve(null)
+        p.hasGit ? getCommits(p.path) : Promise.resolve(null),
+        p.hasGit ? getIsDirty(p.path) : Promise.resolve(false)
       ]);
       if (cancel.cancelled) break;
-      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits }); } catch { break; }
+      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits, isDirty }); } catch { break; }
     }
   }
 
@@ -507,8 +522,8 @@ const _saved = ${UI_STATE_JSON};
 const CONFIG = ${JSON.stringify(config)};
 
 // working copies with async enrichment fields
-const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null }));
-const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null }));
+const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null }));
+const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null }));
 
 const byPath = {};
 projects.forEach(p => { byPath[p.path] = p; });
@@ -654,8 +669,15 @@ function cardHtml(p, q) {
     ? '<span class="commits-badge" data-path="' + pa + '">◈</span>'
     : '';
 
+  const dirtyBadge = p.isDirty === true
+    ? '<span class="dirty-badge" title="uncommitted changes">●</span>'
+    : p.isDirty === null && p.hasGit
+      ? '<span class="dirty-badge pending" title="checking status…"></span>'
+      : '';
+
   const isFav = favSet.has(p.path);
   const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '★' : '☆') + '</button>';
+  const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + pa + '\\')" title="Open in terminal">⌨</button>';
 
   const isJava = p.stack === 'java' || p.stack === 'gradle';
   const vscBtn     = '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>';
@@ -685,11 +707,12 @@ function cardHtml(p, q) {
           <span class="tag">\${esc(p.group)}</span>
           \${stack}
         </div>
-        <div class="actions">\${starBtn}\${openBtn}</div>
+        <div class="actions">\${starBtn}\${termBtn}\${openBtn}</div>
       </div>
       <div class="name">\${highlight(p.name, q)}</div>
       <div class="row">
         \${branch}
+        \${dirtyBadge}
         \${commitsBadge}
         \${remote}
         \${timeVal}
@@ -829,9 +852,9 @@ window.addEventListener('message', ev => {
   const msg = ev.data;
   if (msg && msg.command === 'enrich') {
     const p = byPath[msg.path];
-    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; }
+    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; p.isDirty = msg.isDirty ?? null; }
     const r = recents.find(x => x.path === msg.path);
-    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; }
+    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; }
     render();
   }
   if (msg && msg.command === 'favoritesUpdated') {
@@ -889,6 +912,7 @@ function openCard(ev, p)    {
   vscode.postMessage({ command: 'openProject', path: p, newWindow: action === 'new-window' });
 }
 function openIntelliJ(p)   { vscode.postMessage({ command: 'openIntelliJ', path: p }); }
+function openInTerminal(p) { vscode.postMessage({ command: 'openInTerminal', path: p }); }
 function reveal(p)          { vscode.postMessage({ command: 'revealInFinder', path: p }); }
 function openRemote(url)    { if (url) vscode.postMessage({ command: 'openRemote', url }); }
 function refresh()        { vscode.postMessage({ command: 'refresh' }); }

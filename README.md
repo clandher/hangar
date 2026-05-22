@@ -11,12 +11,15 @@ Hangar opens a fast, filterable dashboard of all your local projects — launch 
 - **Multi-hangar** — add multiple root folders, switch between them with tabs
 - **Instant filter** — type to search projects by name
 - **Git info** — branch, last commit message, author, and time per card
+- **Dirty indicator** — red `●` badge on cards with uncommitted changes
+- **Open in terminal** — `⌨` button opens the project in VS Code's integrated terminal
 - **Recents** — recently opened projects surfaced at the top
 - **Favorites** — star projects to pin them
 - **Disk size** — see folder size per project
 - **Themes** — terminal, amber, synthwave, paper
 - **Sort** — by recent, modified, name, size, or group
 - **IntelliJ support** — Java/Gradle projects get an IntelliJ button
+- **Status bar** — project count shown in the status bar; click to open Hangar
 
 ## Keybindings
 
@@ -41,6 +44,8 @@ Hangar opens a fast, filterable dashboard of all your local projects — launch 
 | `hangar.maxRecents` | `6` | Number of recent projects to show |
 | `hangar.cardSize` | `normal` | Card size: `compact`, `normal`, or `large` |
 | `hangar.showGitInfo` | `true` | Show git branch, last commit, and badge on cards |
+| `hangar.reusePanel` | `true` | Reveal existing panel instead of opening a new one |
+| `hangar.showStatusBar` | `true` | Show project count in the status bar |
 
 ## Tip
 

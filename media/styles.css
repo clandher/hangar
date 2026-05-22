@@ -158,6 +158,18 @@ html, body {
 .star-btn:hover { color: var(--accent); }
 .star-btn.starred { color: var(--accent); }
 
+.term-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 1px 4px;
+  line-height: 1;
+  transition: color 0.1s;
+}
+.term-btn:hover { color: var(--info); }
+
 /* ============================================================
    topbar
    ============================================================ */
@@ -535,6 +547,14 @@ section { margin-bottom: 32px; }
 }
 
 .card .commits-badge:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+.card .dirty-badge {
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1;
+  user-select: none;
+}
+.card .dirty-badge.pending { visibility: hidden; }
 
 /* card actions (always visible, in card-header) */
 .card .actions {
