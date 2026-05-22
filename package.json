@@ -73,6 +73,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show git branch, last commit, and commit badge on cards."
+        },
+        "hangar.reusePanel": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reveal existing Hangar panel instead of opening a new one."
         }
       }
     }

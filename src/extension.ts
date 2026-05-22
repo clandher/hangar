@@ -35,6 +35,8 @@ const CONCURRENCY = 8;
 const ENRICH_TIMEOUT = 4000;
 
 let _activated = false;
+let _panel: vscode.WebviewPanel | undefined;
+let _statusBar: vscode.StatusBarItem | undefined;
 
 export async function activate(context: vscode.ExtensionContext) {
   if (_activated) return;
@@ -48,7 +50,13 @@ export async function activate(context: vscode.ExtensionContext) {
     await context.globalState.update('projectsDir', undefined);
   }
 
-  // no hangars: open dashboard anyway; it will show a warning
+  _statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  _statusBar.command = 'hangar.open';
+  _statusBar.tooltip = 'Open Hangar';
+  _statusBar.show();
+  context.subscriptions.push(_statusBar);
+
+  updateStatusBar(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('hangar.open', () => openDashboard(context)),
@@ -64,7 +72,15 @@ export async function activate(context: vscode.ExtensionContext) {
         context.globalState.update(THEME_KEY, undefined),
         context.globalState.update(UI_STATE_KEY, undefined),
       ]);
+      updateStatusBar(context);
       vscode.window.showInformationMessage('Hangar storage cleared. Reload window to restart.');
+    }),
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('hangar') && _panel) {
+        // re-render open panel when settings change
+        (_panel as any)._hangarRender?.();
+      }
+      if (e.affectsConfiguration('hangar')) updateStatusBar(context);
     })
   );
 
@@ -74,7 +90,27 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 }
 
+function updateStatusBar(context: vscode.ExtensionContext) {
+  if (!_statusBar) return;
+  const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+  if (!hangars.length) {
+    _statusBar.text = '⊹ hangar';
+    return;
+  }
+  let count = 0;
+  for (const h of hangars) {
+    try { count += fs.readdirSync(h.path).filter(n => !n.startsWith('.')).length; } catch { /* ignore */ }
+  }
+  _statusBar.text = `⊹ ${count} projects`;
+}
+
 async function openDashboard(context: vscode.ExtensionContext) {
+
+  const reuse = vscode.workspace.getConfiguration('hangar').get<boolean>('reusePanel', true);
+  if (reuse && _panel) {
+    _panel.reveal();
+    return;
+  }
 
   const panel = vscode.window.createWebviewPanel(
     'dashboard',
@@ -88,12 +124,18 @@ async function openDashboard(context: vscode.ExtensionContext) {
       ]
     }
   );
+  _panel = panel;
 
   const styleUri = panel.webview.asWebviewUri(
     vscode.Uri.joinPath(context.extensionUri, 'media', 'styles.css')
   );
 
+  let enrichCancel = { cancelled: false };
+
   const render = () => {
+    enrichCancel.cancelled = true;
+    enrichCancel = { cancelled: false };
+
     const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
     if (!hangars.length) {
       const extVersion = context.extension.packageJSON.version as string;
@@ -116,8 +158,18 @@ async function openDashboard(context: vscode.ExtensionContext) {
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
     const extVersion = context.extension.packageJSON.version as string;
     panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name);
-    enrichProjects(projects, panel);
+    updateStatusBar(context);
+    enrichProjects(projects, panel, enrichCancel);
   };
+
+  // expose render for onDidChangeConfiguration hook
+  (panel as any)._hangarRender = render;
+
+  panel.onDidDispose(() => {
+    enrichCancel.cancelled = true;
+    if (_panel === panel) _panel = undefined;
+    (panel as any)._hangarRender = undefined;
+  });
 
   render();
 
@@ -315,17 +367,19 @@ async function getCommits(p: string): Promise<Commit[] | null> {
   });
 }
 
-async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel) {
+async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }) {
   const queue = projects.slice();
 
   async function worker() {
     while (queue.length) {
+      if (cancel.cancelled) break;
       const p = queue.shift();
       if (!p) break;
       const [sizeKb, commits] = await Promise.all([
         getSizeKb(p.path),
         p.hasGit ? getCommits(p.path) : Promise.resolve(null)
       ]);
+      if (cancel.cancelled) break;
       try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits }); } catch { break; }
     }
   }
