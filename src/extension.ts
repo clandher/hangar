@@ -92,7 +92,9 @@ async function openDashboard(context: vscode.ExtensionContext) {
   const render = () => {
     const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
     if (!hangars.length) {
-      panel.webview.html = getNoHangarHtml(styleUri.toString());
+      const extVersion = context.extension.packageJSON.version as string;
+      const hotkey = process.platform === 'darwin' ? '⌘⇧R' : 'Ctrl+Shift+R';
+      panel.webview.html = getNoHangarHtml(styleUri.toString(), extVersion, hotkey);
       return;
     }
     const recents = context.globalState.get<Recents>(RECENTS_KEY, {});
@@ -108,7 +110,8 @@ async function openDashboard(context: vscode.ExtensionContext) {
       showGitInfo: cfg.get<boolean>('showGitInfo', true),
     };
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
-    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, vscode.workspace.name);
+    const extVersion = context.extension.packageJSON.version as string;
+    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name);
     enrichProjects(projects, panel);
   };
 
@@ -333,7 +336,7 @@ function esc(s: string): string {
 
 type HangarConfig = { chipAction: string; clickAction: string; maxRecents: number; cardSize: string; showGitInfo: boolean };
 
-function getNoHangarHtml(styleUri: string): string {
+function getNoHangarHtml(styleUri: string, version: string, hotkey: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -350,9 +353,12 @@ function getNoHangarHtml(styleUri: string): string {
 <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:1rem;text-align:center;">
   <div style="font-size:1.1rem;opacity:0.6;">no hangar selected</div>
   <div style="opacity:0.4;font-size:0.85rem;max-width:340px;line-height:1.5;">
-    Select the folder where you keep your projects.<br>Hangar will list everything inside it as a project.
+    Select the folder where you keep your projects.<br>Hangar will list everything inside it as a project.<br><br>
+    You can add multiple hangars to organize different project groups.<br>
+    Open anytime with <kbd>${hotkey}</kbd>.
   </div>
   <button onclick="addHangar()" style="margin-top:0.5rem;">+ select projects folder</button>
+  <div style="opacity:0.25;font-size:0.75rem;margin-top:1rem;">v${version}</div>
 </div>
 <script>
 const vscode = acquireVsCodeApi();
@@ -362,7 +368,7 @@ function addHangar() { vscode.postMessage({ command: 'addHangar' }); }
 </html>`;
 }
 
-function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, workspaceName?: string): string {
+function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, version: string, workspaceName?: string): string {
 
   const displayName = workspaceName ?? 'hangar';
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
@@ -423,7 +429,7 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
     <span class="kbd">⌘+click</span> ${config.clickAction === 'new-window' ? 'new window' : 'replace'}
   </div>
   <div id="stats"></div>
-  <div class="muted-time">v1.1.0</div>
+  <div class="muted-time">v${version}</div>
 </div>
 
 <!-- global tooltip (JS-positioned) -->

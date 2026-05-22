@@ -1,5 +1,5 @@
 {
-  "version": "1.7.0",
+  "version": "1.8.0",
   "name": "hangar-directories",
   "publisher": "clandher",
   "displayName": "Hangar",
@@ -30,8 +30,8 @@
     "keybindings": [
       {
         "command": "hangar.open",
-        "key": "ctrl+shift+h",
-        "mac": "cmd+shift+h"
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
       }
     ],
     "configuration": {
