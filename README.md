@@ -17,7 +17,9 @@ Hangar opens a fast, filterable dashboard of all your local projects — launch 
 - **Favorites** — star projects to pin them
 - **Disk size** — see folder size per project
 - **Themes** — terminal, amber, synthwave, paper
-- **Sort** — by recent, modified, name, size, or group
+- **Sort** — by recent, modified, name, size, group, or dirty-first
+- **`.hangarignore`** — exclude folders from dashboard; hover any hangar tab and click `⊘` to open/create the file
+- **Ahead/behind** — `↑2 ↓1` badge shows commits ahead/behind a base branch (configurable)
 - **IntelliJ support** — Java/Gradle projects get an IntelliJ button
 - **Status bar** — project count shown in the status bar; click to open Hangar
 
@@ -46,6 +48,7 @@ Hangar opens a fast, filterable dashboard of all your local projects — launch 
 | `hangar.showGitInfo` | `true` | Show git branch, last commit, and badge on cards |
 | `hangar.reusePanel` | `true` | Reveal existing panel instead of opening a new one |
 | `hangar.showStatusBar` | `true` | Show project count in the status bar |
+| `hangar.baseBranch` | `""` | Branch to compare ahead/behind against (e.g. `develop`). Empty = each repo's upstream |
 
 ## Tip
 

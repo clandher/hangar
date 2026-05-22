@@ -137,6 +137,17 @@ html, body {
 }
 .htab-remove:hover { color: var(--fg); }
 
+.htab-ignore {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: pointer;
+}
+.htab:hover .htab-ignore { opacity: 1; }
+.htab-ignore:hover { color: var(--accent); }
+
 .htab-add {
   font-size: 15px;
   padding: 1px 8px;
@@ -555,6 +566,10 @@ section { margin-bottom: 32px; }
   user-select: none;
 }
 .card .dirty-badge.pending { visibility: hidden; }
+
+.card .ahead-behind { display: inline-flex; gap: 3px; font-size: 10px; }
+.card .ab-ahead  { color: var(--accent); }
+.card .ab-behind { color: var(--warn); }
 
 /* card actions (always visible, in card-header) */
 .card .actions {

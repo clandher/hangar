@@ -21,6 +21,8 @@ type Project = {
   sizeKb: number | null;
   commits: Commit[] | null;
   isDirty: boolean | null;
+  ahead: number | null;
+  behind: number | null;
 };
 
 type Recents = Record<string, number>;
@@ -157,6 +159,7 @@ async function openDashboard(context: vscode.ExtensionContext) {
       maxRecents: cfg.get<number>('maxRecents', 6),
       cardSize: cfg.get<string>('cardSize', 'normal'),
       showGitInfo: cfg.get<boolean>('showGitInfo', true),
+      baseBranch: cfg.get<string>('baseBranch', ''),
     };
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
     const extVersion = context.extension.packageJSON.version as string;
@@ -240,6 +243,14 @@ async function openDashboard(context: vscode.ExtensionContext) {
       terminal.show();
     }
 
+    if (msg.command === 'openHangarIgnore') {
+      const filePath = path.join(msg.hangarPath, '.hangarignore');
+      if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, '# .hangarignore — one folder name per line\n# Lines starting with # are comments\n');
+      }
+      vscode.window.showTextDocument(vscode.Uri.file(filePath));
+    }
+
     if (msg.command === 'toggleFavorite') {
       const favs = context.globalState.get<string[]>(FAVORITES_KEY, []);
       const next = favs.includes(msg.path)
@@ -267,10 +278,19 @@ function trimRecents(recents: Recents): Recents {
   );
 }
 
+function readHangarIgnore(projectsDir: string): Set<string> {
+  try {
+    const raw = fs.readFileSync(path.join(projectsDir, '.hangarignore'), 'utf8');
+    return new Set(raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')));
+  } catch { return new Set(); }
+}
+
 function getProjects(projectsDir: string, recents: Recents, hangarName: string = ''): Project[] {
 
   let dirs: string[];
   try { dirs = fs.readdirSync(projectsDir); } catch { return []; }
+
+  const ignored = readHangarIgnore(projectsDir);
 
   return dirs
     .map(name => {
@@ -278,6 +298,7 @@ function getProjects(projectsDir: string, recents: Recents, hangarName: string =
       let stat: fs.Stats;
       try { stat = fs.statSync(fullPath); } catch { return null; }
       if (!stat.isDirectory() || name.startsWith('.')) return null;
+      if (ignored.has(name)) return null;
 
       const parts = name.split(/[-_]/);
       const group = parts.length >= 2 ? parts[0] : 'misc';
@@ -298,9 +319,7 @@ function getProjects(projectsDir: string, recents: Recents, hangarName: string =
         branch: hasGit ? readBranch(gitPath) : null,
         stack: detectStack(fullPath),
         remoteUrl: hasGit ? readRemoteUrl(gitPath) : null,
-        sizeKb: null,
-        commits: null,
-        isDirty: null
+        sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null
       } as Project;
     })
     .filter((p): p is Project => p !== null);
@@ -381,7 +400,16 @@ async function getIsDirty(p: string): Promise<boolean> {
   return out.trim().length > 0;
 }
 
+async function getAheadBehind(p: string, baseBranch: string): Promise<{ ahead: number; behind: number } | null> {
+  const ref = baseBranch || '@{u}';
+  const out = await run(`git rev-list --left-right --count HEAD...${ref}`, p);
+  const m = out.trim().match(/^(\d+)\s+(\d+)$/);
+  if (!m) return null;
+  return { ahead: parseInt(m[1], 10), behind: parseInt(m[2], 10) };
+}
+
 async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }) {
+  const baseBranch = vscode.workspace.getConfiguration('hangar').get<string>('baseBranch', '');
   const queue = projects.slice();
 
   async function worker() {
@@ -389,13 +417,16 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, c
       if (cancel.cancelled) break;
       const p = queue.shift();
       if (!p) break;
-      const [sizeKb, commits, isDirty] = await Promise.all([
+      const [sizeKb, commits, isDirty, aheadBehind] = await Promise.all([
         getSizeKb(p.path),
         p.hasGit ? getCommits(p.path) : Promise.resolve(null),
-        p.hasGit ? getIsDirty(p.path) : Promise.resolve(false)
+        p.hasGit ? getIsDirty(p.path) : Promise.resolve(false),
+        p.hasGit ? getAheadBehind(p.path, baseBranch) : Promise.resolve(null)
       ]);
       if (cancel.cancelled) break;
-      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits, isDirty }); } catch { break; }
+      const ahead  = aheadBehind?.ahead  ?? null;
+      const behind = aheadBehind?.behind ?? null;
+      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits, isDirty, ahead, behind }); } catch { break; }
     }
   }
 
@@ -407,7 +438,7 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-type HangarConfig = { chipAction: string; clickAction: string; maxRecents: number; cardSize: string; showGitInfo: boolean };
+type HangarConfig = { chipAction: string; clickAction: string; maxRecents: number; cardSize: string; showGitInfo: boolean; baseBranch: string };
 
 function getNoHangarHtml(styleUri: string, version: string, hotkey: string): string {
   return `<!DOCTYPE html>
@@ -456,7 +487,7 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
 
   // passed to webview JS as data
   const THEMES_JSON = JSON.stringify(['terminal', 'amber', 'synthwave', 'paper']);
-  const SORTS_JSON  = JSON.stringify(['recent', 'modified', 'name', 'size', 'group']);
+  const SORTS_JSON  = JSON.stringify(['recent', 'modified', 'name', 'size', 'group', 'dirty']);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -522,8 +553,8 @@ const _saved = ${UI_STATE_JSON};
 const CONFIG = ${JSON.stringify(config)};
 
 // working copies with async enrichment fields
-const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null }));
-const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null }));
+const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null }));
+const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null }));
 
 const byPath = {};
 projects.forEach(p => { byPath[p.path] = p; });
@@ -675,6 +706,19 @@ function cardHtml(p, q) {
       ? '<span class="dirty-badge pending" title="checking status…"></span>'
       : '';
 
+  const abBase = CONFIG.baseBranch || 'upstream';
+  const abTip = [
+    p.ahead  ? '↑' + p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' you have not in ' + abBase : '',
+    p.behind ? '↓' + p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' in ' + abBase + ' you lack' : '',
+    'vs ' + abBase
+  ].filter(Boolean).join(' · ');
+  const aheadBehind = p.hasGit && (p.ahead || p.behind)
+    ? '<span class="ahead-behind" title="' + esc(abTip) + '">' +
+      (p.ahead  ? '<span class="ab-ahead">↑' + p.ahead  + '</span>' : '') +
+      (p.behind ? '<span class="ab-behind">↓' + p.behind + '</span>' : '') +
+      '</span>'
+    : '';
+
   const isFav = favSet.has(p.path);
   const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '★' : '☆') + '</button>';
   const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + pa + '\\')" title="Open in terminal">⌨</button>';
@@ -713,6 +757,7 @@ function cardHtml(p, q) {
       <div class="row">
         \${branch}
         \${dirtyBadge}
+        \${aheadBehind}
         \${commitsBadge}
         \${remote}
         \${timeVal}
@@ -747,6 +792,13 @@ function sorted(list) {
       if (a.group !== b.group) return a.group.localeCompare(b.group);
       if ((a.subgroup||'') !== (b.subgroup||'')) return (a.subgroup||'').localeCompare(b.subgroup||'');
       return a.name.localeCompare(b.name);
+    });
+  } else if (state.sort === 'dirty') {
+    arr.sort((a,b) => {
+      const da = a.isDirty === true ? 0 : a.isDirty === null ? 1 : 2;
+      const db = b.isDirty === true ? 0 : b.isDirty === null ? 1 : 2;
+      if (da !== db) return da - db;
+      return b.lastOpened - a.lastOpened;
     });
   }
   return arr;
@@ -852,9 +904,9 @@ window.addEventListener('message', ev => {
   const msg = ev.data;
   if (msg && msg.command === 'enrich') {
     const p = byPath[msg.path];
-    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; p.isDirty = msg.isDirty ?? null; }
+    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; p.isDirty = msg.isDirty ?? null; p.ahead = msg.ahead ?? null; p.behind = msg.behind ?? null; }
     const r = recents.find(x => x.path === msg.path);
-    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; }
+    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; r.ahead = msg.ahead ?? null; r.behind = msg.behind ?? null; }
     render();
   }
   if (msg && msg.command === 'favoritesUpdated') {
@@ -870,17 +922,25 @@ function renderHangarTabs() {
   const $tabs = document.getElementById('hangar-tabs');
   let html = '<div class="htab' + (!state.hangarFilter ? ' active' : '') + '" data-hangar="">all</div>';
   html += HANGARS.map((h, i) =>
-    '<div class="htab' + (state.hangarFilter === h.name ? ' active' : '') + '" data-hangar="' + esc(h.name) + '" data-idx="' + i + '">' +
+    '<div class="htab' + (state.hangarFilter === h.name ? ' active' : '') + '" data-hangar="' + esc(h.name) + '" data-idx="' + i + '" data-path="' + esc(h.path) + '">' +
     esc(h.name) +
+    '<span class="htab-ignore" data-path="' + esc(h.path) + '" title="Edit .hangarignore">⊘</span>' +
     (HANGARS.length > 1 ? '<span class="htab-remove" data-idx="' + i + '">×</span>' : '') +
     '</div>'
   ).join('');
   html += '<div class="htab htab-add" id="htab-add">+</div>';
   $tabs.innerHTML = html;
 
+  $tabs.querySelectorAll('.htab-ignore').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      vscode.postMessage({ command: 'openHangarIgnore', hangarPath: el.getAttribute('data-path') });
+    });
+  });
+
   $tabs.querySelectorAll('.htab[data-hangar]').forEach(el => {
     el.addEventListener('click', e => {
-      if (e.target.classList.contains('htab-remove')) return;
+      if (e.target.classList.contains('htab-remove') || e.target.classList.contains('htab-ignore')) return;
       // save current group for the current hangar
       hangarStates[state.hangarFilter ?? ''] = state.activeGroup;
       state.hangarFilter = el.getAttribute('data-hangar') || null;
