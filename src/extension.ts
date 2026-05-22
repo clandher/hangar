@@ -23,6 +23,7 @@ type Project = {
   isDirty: boolean | null;
   ahead: number | null;
   behind: number | null;
+  abRef: string | null;
 };
 
 type Recents = Record<string, number>;
@@ -319,7 +320,7 @@ function getProjects(projectsDir: string, recents: Recents, hangarName: string =
         branch: hasGit ? readBranch(gitPath) : null,
         stack: detectStack(fullPath),
         remoteUrl: hasGit ? readRemoteUrl(gitPath) : null,
-        sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null
+        sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null, abRef: null
       } as Project;
     })
     .filter((p): p is Project => p !== null);
@@ -400,12 +401,16 @@ async function getIsDirty(p: string): Promise<boolean> {
   return out.trim().length > 0;
 }
 
-async function getAheadBehind(p: string, baseBranch: string): Promise<{ ahead: number; behind: number } | null> {
-  const ref = baseBranch || '@{u}';
+async function getAheadBehind(p: string, baseBranch: string): Promise<{ ahead: number; behind: number; ref: string } | null> {
+  let ref = baseBranch;
+  if (!ref) {
+    ref = (await run('git rev-parse --abbrev-ref @{u}', p)).trim();
+    if (!ref || ref.includes('fatal')) return null;
+  }
   const out = await run(`git rev-list --left-right --count HEAD...${ref}`, p);
   const m = out.trim().match(/^(\d+)\s+(\d+)$/);
   if (!m) return null;
-  return { ahead: parseInt(m[1], 10), behind: parseInt(m[2], 10) };
+  return { ahead: parseInt(m[1], 10), behind: parseInt(m[2], 10), ref };
 }
 
 async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, cancel: { cancelled: boolean } = { cancelled: false }) {
@@ -426,7 +431,8 @@ async function enrichProjects(projects: Project[], panel: vscode.WebviewPanel, c
       if (cancel.cancelled) break;
       const ahead  = aheadBehind?.ahead  ?? null;
       const behind = aheadBehind?.behind ?? null;
-      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits, isDirty, ahead, behind }); } catch { break; }
+      const abRef  = aheadBehind?.ref    ?? null;
+      try { panel.webview.postMessage({ command: 'enrich', path: p.path, sizeKb, commits, isDirty, ahead, behind, abRef }); } catch { break; }
     }
   }
 
@@ -553,8 +559,8 @@ const _saved = ${UI_STATE_JSON};
 const CONFIG = ${JSON.stringify(config)};
 
 // working copies with async enrichment fields
-const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null }));
-const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null }));
+const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null, abRef: null }));
+const recents  = recentProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null, abRef: null }));
 
 const byPath = {};
 projects.forEach(p => { byPath[p.path] = p; });
@@ -706,7 +712,7 @@ function cardHtml(p, q) {
       ? '<span class="dirty-badge pending" title="checking status…"></span>'
       : '';
 
-  const abBase = CONFIG.baseBranch || 'upstream';
+  const abBase = p.abRef || CONFIG.baseBranch || 'upstream';
   const abTip = [
     p.ahead  ? '↑' + p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' you have not in ' + abBase : '',
     p.behind ? '↓' + p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' in ' + abBase + ' you lack' : '',
@@ -904,9 +910,9 @@ window.addEventListener('message', ev => {
   const msg = ev.data;
   if (msg && msg.command === 'enrich') {
     const p = byPath[msg.path];
-    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; p.isDirty = msg.isDirty ?? null; p.ahead = msg.ahead ?? null; p.behind = msg.behind ?? null; }
+    if (p) { p.sizeKb = msg.sizeKb; p.commits = msg.commits; p.isDirty = msg.isDirty ?? null; p.ahead = msg.ahead ?? null; p.behind = msg.behind ?? null; p.abRef = msg.abRef ?? null; }
     const r = recents.find(x => x.path === msg.path);
-    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; r.ahead = msg.ahead ?? null; r.behind = msg.behind ?? null; }
+    if (r) { r.sizeKb = msg.sizeKb; r.commits = msg.commits; r.isDirty = msg.isDirty ?? null; r.ahead = msg.ahead ?? null; r.behind = msg.behind ?? null; r.abRef = msg.abRef ?? null; }
     render();
   }
   if (msg && msg.command === 'favoritesUpdated') {
