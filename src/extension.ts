@@ -29,6 +29,18 @@ type Project = {
 type Recents = Record<string, number>;
 type Hangar = { name: string; path: string };
 
+type RunnerResultType = 'count' | 'pass-fail' | 'json-count' | 'json-field' | 'text';
+type Runner = {
+  name: string;
+  command: string;
+  resultType: RunnerResultType;
+  field?: string;
+  label?: string;
+  warnAt?: number;
+  errorAt?: number;
+  stacks?: string[];
+};
+
 const RECENTS_KEY = 'recents';
 const THEME_KEY = 'theme';
 const HANGARS_KEY = 'hangars';
@@ -137,6 +149,7 @@ async function openDashboard(context: vscode.ExtensionContext) {
     vscode.Uri.joinPath(context.extensionUri, 'media', 'styles.css')
   );
 
+  let currentProjects: Project[] = [];
   let enrichCancel = { cancelled: false };
 
   const render = () => {
@@ -163,10 +176,12 @@ async function openDashboard(context: vscode.ExtensionContext) {
       showGitInfo: cfg.get<boolean>('showGitInfo', true),
       baseBranch: cfg.get<string>('baseBranch', ''),
     };
+    const runners = cfg.get<Runner[]>('runners', []);
     const projects = hangars.flatMap(h => getProjects(h.path, recents, h.name));
+    currentProjects = projects;
     const extVersion = context.extension.packageJSON.version as string;
     const projectBranches = context.globalState.get<Record<string, string>>(PROJECT_BRANCHES_KEY, {});
-    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name, projectBranches);
+    panel.webview.html = getHtml(projects, hangars, favorites, uiState, theme, styleUri.toString(), config, extVersion, vscode.workspace.name, projectBranches, runners);
     updateStatusBar(context);
     enrichProjects(projects, panel, enrichCancel, projectBranches);
   };
@@ -265,6 +280,50 @@ async function openDashboard(context: vscode.ExtensionContext) {
       try { panel.webview.postMessage({ command: 'enrich', path: msg.path, sizeKb, commits, isDirty, ahead, behind, abRef }); } catch { /* panel disposed */ }
     }
 
+    if (msg.command === 'cloneRepo') {
+      const rawUrl = (msg.url as string).trim().replace(/^git\s+clone\s+/i, '').trim();
+      if (!rawUrl) return;
+
+      const repoName = rawUrl.split('/').pop()?.replace(/\.git$/i, '') ?? 'repo';
+      const hangars = context.globalState.get<Hangar[]>(HANGARS_KEY) ?? [];
+      if (!hangars.length) { vscode.window.showErrorMessage('No hay hangars configurados.'); return; }
+
+      let targetHangar: Hangar;
+      if (hangars.length === 1) {
+        targetHangar = hangars[0];
+      } else {
+        const pick = await vscode.window.showQuickPick(
+          hangars.map(h => ({ label: h.name, description: h.path, hangar: h })),
+          { placeHolder: `¿En qué hangar clonar "${repoName}"?` }
+        );
+        if (!pick) { panel.webview.postMessage({ command: 'cloneDone' }); return; }
+        targetHangar = pick.hangar;
+      }
+
+      const dest = path.join(targetHangar.path, repoName);
+      if (fs.existsSync(dest)) {
+        vscode.window.showErrorMessage(`"${repoName}" ya existe en ${targetHangar.name}.`);
+        panel.webview.postMessage({ command: 'cloneDone' });
+        return;
+      }
+
+      try {
+        await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `Clonando ${repoName}…`, cancellable: false },
+          () => new Promise<void>((resolve, reject) => {
+            cp.execFile('git', ['clone', rawUrl, dest], { timeout: 120000, maxBuffer: 2 * 1024 * 1024 },
+              (err, _out, stderr) => err ? reject(new Error(stderr || err.message)) : resolve()
+            );
+          })
+        );
+        render();
+        vscode.window.showInformationMessage(`Clonado ${repoName} en "${targetHangar.name}"`);
+      } catch (e: any) {
+        vscode.window.showErrorMessage(`Clone falló: ${e.message}`);
+      }
+      panel.webview.postMessage({ command: 'cloneDone' });
+    }
+
     if (msg.command === 'openHangarIgnore') {
       const filePath = path.join(msg.hangarPath, '.hangarignore');
       if (!fs.existsSync(filePath)) {
@@ -307,6 +366,30 @@ async function openDashboard(context: vscode.ExtensionContext) {
     if (msg.command === 'setTheme') {
       await context.globalState.update(THEME_KEY, msg.theme);
       render();
+    }
+
+    if (msg.command === 'runScanner') {
+      const runner = msg.runner as Runner;
+      const allPaths = msg.paths as string[];
+      const queue = allPaths.filter(p => {
+        if (!runner.stacks?.length) { return true; }
+        const proj = currentProjects.find(pr => pr.path === p);
+        return proj && runner.stacks!.includes(proj.stack ?? '');
+      }).slice();
+      async function scanWorker() {
+        while (queue.length) {
+          const projPath = queue.shift();
+          if (!projPath) { break; }
+          const cmd = runner.command.replace(/\{path\}/g, projPath.replace(/"/g, '\\"'));
+          const { out, code } = await runWithCode(cmd, projPath);
+          const { display, status, detail } = parseRunnerResult(runner, out, code);
+          try {
+            panel.webview.postMessage({ command: 'scanResult', path: projPath, runnerName: runner.name, display, status, detail });
+          } catch { break; }
+        }
+      }
+      await Promise.all(Array(CONCURRENCY).fill(0).map(() => scanWorker()));
+      try { panel.webview.postMessage({ command: 'scanDone', runnerName: runner.name }); } catch { /* disposed */ }
     }
 
   });
@@ -400,12 +483,86 @@ function detectStack(p: string): string | null {
   return null;
 }
 
-function run(cmd: string, cwd: string): Promise<string> {
+function run(cmd: string, cwd: string, timeout = ENRICH_TIMEOUT): Promise<string> {
   return new Promise(resolve => {
-    cp.exec(cmd, { cwd, timeout: ENRICH_TIMEOUT, maxBuffer: 1024 * 1024 },
+    cp.exec(cmd, { cwd, timeout, maxBuffer: 1024 * 1024 },
       (err: Error | null, stdout: string) => resolve(err ? '' : stdout)
     );
   });
+}
+
+function runWithCode(cmd: string, cwd: string, timeout = 30000): Promise<{out: string; code: number}> {
+  return new Promise(resolve => {
+    cp.exec(cmd, { cwd, timeout, maxBuffer: 4 * 1024 * 1024 },
+      (err: any, stdout: string) => resolve({ out: stdout || '', code: err?.code ?? 0 })
+    );
+  });
+}
+
+function buildDetail(runner: Runner, out: string): string[] {
+  const MAX = 15;
+  const rawLines = out.trim().split('\n').filter(Boolean).slice(0, MAX);
+  try {
+    if (runner.resultType === 'json-count') {
+      const parsed = JSON.parse(out.trim() || '{}');
+      if (Array.isArray(parsed)) {
+        return parsed.slice(0, MAX).map((p: any) =>
+          `${p.name ?? p.package ?? '?'}: ${p.version ?? '?'} → ${p.latest_version ?? p.latest ?? '?'}`
+        );
+      }
+      return Object.entries(parsed).slice(0, MAX).map(([name, info]: [string, any]) =>
+        `${name}: ${info.current ?? '?'} → ${info.latest ?? info.wanted ?? '?'}`
+      );
+    }
+    if (runner.resultType === 'json-field') {
+      const parsed = JSON.parse(out.trim() || '{}');
+      const parentParts = (runner.field ?? '').split('.').slice(0, -1);
+      let parent: any = parsed;
+      for (const p of parentParts) { parent = parent?.[p]; }
+      if (parent && typeof parent === 'object' && !Array.isArray(parent)) {
+        const lines = Object.entries(parent)
+          .filter(([k]) => k !== 'total')
+          .map(([k, v]) => `${k}: ${v}`)
+          .filter(Boolean);
+        if (lines.length) { return lines; }
+      }
+    }
+  } catch { /* ignore */ }
+  return rawLines;
+}
+
+function parseRunnerResult(runner: Runner, out: string, code: number): { display: string; status: 'ok' | 'warn' | 'error' | 'neutral'; detail: string[] } {
+  const label = runner.label ?? '';
+  const detail = buildDetail(runner, out);
+  try {
+    if (runner.resultType === 'pass-fail') {
+      return { display: code === 0 ? '✓ pass' : '✗ fail', status: code === 0 ? 'ok' : 'error', detail };
+    }
+    if (runner.resultType === 'text') {
+      return { display: out.trim().split('\n')[0].trim() || '—', status: 'neutral', detail };
+    }
+    let numVal = 0;
+    if (runner.resultType === 'count') {
+      numVal = parseInt(out.trim(), 10);
+      if (isNaN(numVal)) { numVal = out.trim().split('\n').filter(Boolean).length; }
+    } else if (runner.resultType === 'json-count') {
+      const parsed = JSON.parse(out.trim() || '{}');
+      numVal = Array.isArray(parsed) ? parsed.length : Object.keys(parsed).length;
+    } else if (runner.resultType === 'json-field') {
+      const parsed = JSON.parse(out.trim() || '{}');
+      const parts = (runner.field ?? '').split('.');
+      let v: any = parsed;
+      for (const part of parts) { v = v?.[part]; }
+      numVal = typeof v === 'number' ? v : parseInt(String(v), 10);
+      if (isNaN(numVal)) { numVal = 0; }
+    }
+    const display = `${numVal}${label ? ' ' + label : ''}`;
+    if (runner.errorAt !== undefined && numVal >= runner.errorAt) { return { display, status: 'error', detail }; }
+    if (runner.warnAt !== undefined && numVal >= runner.warnAt) { return { display, status: 'warn', detail }; }
+    return { display, status: 'ok', detail };
+  } catch {
+    return { display: 'err', status: 'error', detail: [] };
+  }
 }
 
 async function getSizeKb(p: string): Promise<number | null> {
@@ -524,7 +681,7 @@ function addHangar() { vscode.postMessage({ command: 'addHangar' }); }
 </html>`;
 }
 
-function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, version: string, workspaceName?: string, projectBranches: Record<string, string> = {}): string {
+function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], uiState: object, theme: string, styleUri: string, config: HangarConfig, version: string, workspaceName?: string, projectBranches: Record<string, string> = {}, runners: Runner[] = []): string {
 
   const displayName = workspaceName ?? 'hangar';
   const groups = Array.from(new Set(projects.map(p => p.group))).sort();
@@ -537,6 +694,7 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
   const FAVORITES_JSON = JSON.stringify(favorites);
   const UI_STATE_JSON = JSON.stringify(uiState);
   const PROJECT_BRANCHES_JSON = JSON.stringify(projectBranches);
+  const RUNNERS_JSON = JSON.stringify(runners);
 
   // passed to webview JS as data
   const THEMES_JSON = JSON.stringify(['terminal', 'amber', 'synthwave', 'paper']);
@@ -560,6 +718,13 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
       <span class="path">${projects.length} projects</span>
       <button onclick="refresh()">↺</button>
       <button id="theme-cycle" class="cycle-btn">theme: ${esc(theme)} ▸</button>
+      <button onclick="toggleCloneBar()" title="Clonar repositorio">+ clone</button>
+      <div class="runner-wrap" id="runner-wrap">
+        <button id="runner-btn" onclick="toggleRunnerMenu()">scan ▾</button>
+        <div id="runner-menu" class="runner-menu" style="display:none"></div>
+      </div>
+      <button id="select-toggle" onclick="toggleSelectMode()">select</button>
+      <span id="select-status" class="select-status"></span>
     </div>
   </div>
   <div class="hangar-tabs" id="hangar-tabs"></div>
@@ -571,7 +736,15 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
     </div>
     <button id="sort-cycle" class="cycle-btn">sort: recent ▸</button>
     <button id="git-toggle">git only</button>
+    <button id="attention-toggle">⚠ attention</button>
   </div>
+</div>
+
+<div id="clone-bar" style="display:none;padding:0.4rem 1rem;gap:0.5rem;align-items:center;background:var(--bg2,#1a1a1a);border-bottom:1px solid var(--border,#333);">
+  <span style="opacity:0.5;font-size:0.8rem;white-space:nowrap;">git clone</span>
+  <input id="clone-url" type="text" placeholder="https://user@bitbucket.org/workspace/repo.git" style="flex:1;min-width:0;font-family:inherit;font-size:0.85rem;" />
+  <button id="clone-submit-btn" onclick="submitClone()">clonar</button>
+  <button onclick="toggleCloneBar()" style="opacity:0.5;">✕</button>
 </div>
 
 <div class="chips" id="chips"></div>
@@ -605,6 +778,7 @@ const favSet = new Set(${FAVORITES_JSON});
 const _saved = ${UI_STATE_JSON};
 const CONFIG = ${JSON.stringify(config)};
 const PROJECT_BRANCHES = ${PROJECT_BRANCHES_JSON};
+const RUNNERS = ${RUNNERS_JSON};
 
 // working copies with async enrichment fields
 const projects = allProjects.map(p => Object.assign({}, p, { sizeKb: null, commits: null, isDirty: null, ahead: null, behind: null, abRef: null }));
@@ -615,19 +789,26 @@ projects.forEach(p => { byPath[p.path] = p; });
 recents.forEach(p => { byPath[p.path] = byPath[p.path] || p; });
 
 const state = {
-  query: '',
+  query: _saved.query || '',
   sort: _saved.sort || 'recent',
   activeGroup: _saved.activeGroup || null,
   gitOnly: _saved.gitOnly || false,
+  attentionOnly: _saved.attentionOnly || false,
   hangarFilter: _saved.hangarFilter || null
 };
 const hangarStates = _saved.hangarStates || {};
 
+let selectMode = false;
+const selected = new Set();
+const scanResults = {};
+
 function saveState() {
   vscode.postMessage({ command: 'saveState', state: {
+    query: state.query,
     sort: state.sort,
     activeGroup: state.activeGroup,
     gitOnly: state.gitOnly,
+    attentionOnly: state.attentionOnly,
     hangarFilter: state.hangarFilter,
     hangarStates
   }});
@@ -733,6 +914,18 @@ function hideTooltip() {
   tooltipHideTimer = setTimeout(() => $tooltip.classList.remove('visible'), 80);
 }
 
+// ── PR url helper ────────────────────────────────────────────
+function getPrUrl(remoteUrl, branch) {
+  if (!remoteUrl || !branch) { return null; }
+  if (remoteUrl.includes('bitbucket.org')) {
+    return remoteUrl + '/pull-requests/new?source=' + encodeURIComponent(branch);
+  }
+  if (remoteUrl.includes('github.com')) {
+    return remoteUrl + '/compare/' + encodeURIComponent(branch);
+  }
+  return null;
+}
+
 // ── card html ────────────────────────────────────────────────
 function cardHtml(p, q) {
   const pa = esc(p.path);
@@ -772,6 +965,12 @@ function cardHtml(p, q) {
   // remote link
   const remoteBtn = p.remoteUrl
     ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</button>'
+    : '';
+
+  // PR link
+  const prUrl = getPrUrl(p.remoteUrl, p.branch);
+  const prBtn = prUrl
+    ? '<button class="pr-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(prUrl) + '\\')" title="Open pull request">PR↗</button>'
     : '';
 
   // meta: time + size
@@ -816,13 +1015,14 @@ function cardHtml(p, q) {
         \${needPush}
       </div>
       \${commitRow}
+      <div class="scan-results" data-path="\${pa}"></div>
       <div class="card-footer">
         \${commitsBadge}
         <span class="spacer"></span>
         <span class="meta-time" title="last opened">\${timeVal}</span>
         <span class="meta-size">\${sizeVal}</span>
       </div>
-      <div class="actions">\${starBtn}\${syncBtn}\${termBtn}\${branchBtn}\${remoteBtn}\${openBtn}</div>
+      <div class="actions">\${starBtn}\${syncBtn}\${termBtn}\${branchBtn}\${remoteBtn}\${prBtn}\${openBtn}</div>
     </div>
   \`;
 }
@@ -832,6 +1032,7 @@ function filtered() {
   const tokens = state.query.toLowerCase().trim().split(/\\s+/).filter(Boolean);
   return projects.filter(p => {
     if (state.gitOnly && !p.hasGit) return false;
+    if (state.attentionOnly && !(p.isDirty === true || (p.behind !== null && p.behind > 0))) return false;
     if (state.hangarFilter && p.hangar !== state.hangarFilter) return false;
     if (state.activeGroup && p.group !== state.activeGroup) return false;
     if (tokens.length && !tokens.every(t => p.name.toLowerCase().includes(t))) return false;
@@ -944,6 +1145,13 @@ function render() {
 
   $main.innerHTML = html;
 
+  if (selectMode) {
+    $main.querySelectorAll('.card').forEach(card => {
+      if (selected.has(card.getAttribute('data-path'))) { card.classList.add('selected'); }
+    });
+  }
+  Object.keys(scanResults).forEach(p => updateCardScanResults(p));
+
   const gitCount = projects.filter(p => p.hasGit).length;
   const totalKb  = projects.reduce((a, p) => a + (p.sizeKb||0), 0);
   $stats.textContent = projects.length + ' projects · ' + gitCount + ' git · ' + groups.length + ' groups' + (totalKb ? ' · ' + fmtSize(totalKb) : '');
@@ -971,6 +1179,21 @@ window.addEventListener('message', ev => {
   if (msg && msg.command === 'syncStart') {
     const btn = document.querySelector('.sync-btn[data-path="' + msg.path + '"]');
     if (btn) { btn.classList.add('syncing'); btn.textContent = '…'; }
+  }
+  if (msg && msg.command === 'cloneDone') {
+    const btn = document.getElementById('clone-submit-btn');
+    if (btn) { btn.disabled = false; btn.textContent = 'clonar'; }
+    const bar = document.getElementById('clone-bar');
+    if (bar) bar.style.display = 'none';
+  }
+  if (msg && msg.command === 'scanResult') {
+    if (!scanResults[msg.path]) { scanResults[msg.path] = {}; }
+    scanResults[msg.path][msg.runnerName] = { display: msg.display, status: msg.status, detail: msg.detail || [] };
+    updateCardScanResults(msg.path);
+  }
+  if (msg && msg.command === 'scanDone') {
+    const btn = document.getElementById('runner-btn');
+    if (btn) { btn.textContent = 'scan ▾'; btn.disabled = false; }
   }
   if (msg && msg.command === 'favoritesUpdated') {
     msg.favorites.forEach(f => favSet.add(f));
@@ -1044,25 +1267,132 @@ function refresh()        { vscode.postMessage({ command: 'refresh' }); }
 function clearRecents()   { vscode.postMessage({ command: 'clearRecents' }); }
 function toggleFavorite(p){ vscode.postMessage({ command: 'toggleFavorite', path: p }); }
 
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  selected.clear();
+  document.body.classList.toggle('select-mode', selectMode);
+  document.getElementById('select-toggle').classList.toggle('active', selectMode);
+  document.getElementById('select-status').textContent = '';
+  render();
+}
+
+function updateSelectStatus() {
+  document.getElementById('select-status').textContent = selected.size ? selected.size + ' selected' : '';
+}
+
+function toggleRunnerMenu() {
+  const menu = document.getElementById('runner-menu');
+  if (!menu) { return; }
+  const isOpen = menu.style.display !== 'none';
+  if (isOpen) { menu.style.display = 'none'; return; }
+  if (!RUNNERS.length) {
+    menu.innerHTML = '<div class="runner-item muted">no runners in settings</div>';
+  } else {
+    menu.innerHTML = RUNNERS.map((r, i) =>
+      '<div class="runner-item" data-idx="' + i + '">' + esc(r.name) +
+      (r.stacks ? ' <span class="runner-stacks">' + esc(r.stacks.join(', ')) + '</span>' : '') +
+      '</div>'
+    ).join('');
+    menu.querySelectorAll('.runner-item[data-idx]').forEach(el => {
+      el.addEventListener('click', () => {
+        const r = RUNNERS[parseInt(el.getAttribute('data-idx'))];
+        if (r) { runScanner(r); }
+        menu.style.display = 'none';
+      });
+    });
+  }
+  menu.style.display = 'block';
+}
+
+function runScanner(runner) {
+  const btn = document.getElementById('runner-btn');
+  if (btn) { btn.textContent = runner.name + '…'; btn.disabled = true; }
+  const paths = selectMode
+    ? [...selected]
+    : projects.filter(p => p.hasGit).map(p => p.path);
+  projects.forEach(p => { if (scanResults[p.path]) { delete scanResults[p.path][runner.name]; } });
+  vscode.postMessage({ command: 'runScanner', runner, paths });
+}
+
+function showScanTooltip(el, title, lines) {
+  clearTimeout(tooltipHideTimer);
+  if (!lines || !lines.length) { return; }
+  $tooltip.innerHTML = '<div class="tip-head">' + esc(title) + '</div>' +
+    lines.map(l => '<div class="tip-scan-line">' + esc(l) + '</div>').join('');
+  $tooltip.classList.add('visible');
+  const rect = el.getBoundingClientRect();
+  const tw = Math.min(420, window.innerWidth - 20);
+  let left = rect.left;
+  if (left + tw > window.innerWidth - 10) { left = window.innerWidth - tw - 10; }
+  $tooltip.style.left = left + 'px';
+  $tooltip.style.top = (rect.bottom + 6) + 'px';
+  $tooltip.style.minWidth = '220px';
+}
+
+function updateCardScanResults(projPath) {
+  $main.querySelectorAll('.scan-results').forEach(el => {
+    if (el.getAttribute('data-path') !== projPath) { return; }
+    const results = scanResults[projPath] || {};
+    el.innerHTML = Object.entries(results).map(([name, r]) =>
+      '<span class="scan-tag ' + r.status + '" data-runner="' + esc(name) + '">' + esc(name) + ': ' + esc(r.display) + '</span>'
+    ).join('');
+    el.querySelectorAll('.scan-tag[data-runner]').forEach(tag => {
+      const rName = tag.getAttribute('data-runner');
+      tag.addEventListener('mouseenter', () => {
+        const r = (scanResults[projPath] || {})[rName];
+        if (r && r.detail && r.detail.length) { showScanTooltip(tag, rName, r.detail); }
+      });
+      tag.addEventListener('mouseleave', hideTooltip);
+    });
+  });
+}
+
+function toggleCloneBar() {
+  const bar = document.getElementById('clone-bar');
+  const open = bar.style.display !== 'none';
+  bar.style.display = open ? 'none' : 'flex';
+  if (!open) document.getElementById('clone-url').focus();
+}
+
+function submitClone() {
+  const url = document.getElementById('clone-url').value.trim();
+  if (!url) return;
+  const btn = document.getElementById('clone-submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'clonando…';
+  vscode.postMessage({ command: 'cloneRepo', url });
+}
+
+document.getElementById('clone-url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitClone();
+  if (e.key === 'Escape') toggleCloneBar();
+});
+
 // ── card ⌘+click → open in new window ────────────────────────
 $main.addEventListener('click', e => {
-  if (!(e.metaKey || e.ctrlKey)) return;
   const card = e.target.closest('.card');
   if (!card) return;
+  const cardPath = card.getAttribute('data-path');
+  if (selectMode && !e.target.closest('button, .commits-badge')) {
+    if (selected.has(cardPath)) { selected.delete(cardPath); } else { selected.add(cardPath); }
+    card.classList.toggle('selected', selected.has(cardPath));
+    updateSelectStatus();
+    return;
+  }
+  if (!(e.metaKey || e.ctrlKey)) return;
   if (e.target.closest('button, .remote-btn, .commits-badge')) return;
-  const path = card.getAttribute('data-path');
-  const p = byPath[path];
+  const p = byPath[cardPath];
   if (!p) return;
   e.stopPropagation();
   if (p.stack === 'java' || p.stack === 'gradle') {
-    openIntelliJ(path);
+    openIntelliJ(cardPath);
   } else {
-    vscode.postMessage({ command: 'openProject', path, newWindow: true });
+    vscode.postMessage({ command: 'openProject', path: cardPath, newWindow: true });
   }
 });
 
 // ── controls ─────────────────────────────────────────────────
-$q.addEventListener('input', e => { state.query = e.target.value; render(); });
+$q.addEventListener('input', e => { state.query = e.target.value; saveState(); render(); });
 
 // sort cycle
 $sortCycle.addEventListener('click', () => {
@@ -1090,12 +1420,20 @@ $gitToggle.addEventListener('click', () => {
   render();
 });
 
+const $attentionToggle = document.getElementById('attention-toggle');
+$attentionToggle.addEventListener('click', () => {
+  state.attentionOnly = !state.attentionOnly;
+  $attentionToggle.classList.toggle('active', state.attentionOnly);
+  saveState();
+  render();
+});
+
 
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== $q) {
     e.preventDefault(); $q.focus();
   } else if (e.key === 'Escape') {
-    $q.value = ''; state.query = ''; render(); $q.blur();
+    $q.value = ''; state.query = ''; saveState(); render(); $q.blur();
   } else if (e.key === 'r' && document.activeElement !== $q && !e.metaKey && !e.ctrlKey) {
     refresh();
   }
@@ -1104,11 +1442,13 @@ document.addEventListener('keydown', e => {
 // restore button labels from saved state
 $sortCycle.textContent = 'sort: ' + state.sort + ' ▸';
 $gitToggle.classList.toggle('active', state.gitOnly);
+$attentionToggle.classList.toggle('active', state.attentionOnly);
 
 renderHangarTabs();
 renderChips();
 render();
-// focus search after paint
+// restore persisted query and focus
+$q.value = state.query;
 setTimeout(() => $q.focus(), 120);
 </script>
 </body>

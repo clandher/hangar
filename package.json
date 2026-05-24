@@ -111,6 +111,86 @@
           "type": "string",
           "default": "",
           "description": "Branch to compare ahead/behind against (e.g. 'develop', 'main'). Leave empty to use each repo's upstream tracking branch."
+        },
+        "hangar.runners": {
+          "type": "array",
+          "description": "Custom scan commands that run per-project and display results on cards.",
+          "default": [
+            {
+              "name": "npm outdated",
+              "command": "npm outdated --json 2>/dev/null; true",
+              "resultType": "json-count",
+              "label": "outdated",
+              "warnAt": 1,
+              "stacks": ["node"]
+            },
+            {
+              "name": "npm audit",
+              "command": "npm audit --json 2>/dev/null || true",
+              "resultType": "json-field",
+              "field": "metadata.vulnerabilities.total",
+              "label": "vulns",
+              "warnAt": 1,
+              "errorAt": 5,
+              "stacks": ["node"]
+            },
+            {
+              "name": "ncu",
+              "command": "npx --yes npm-check-updates --jsonUpgraded 2>/dev/null",
+              "resultType": "json-count",
+              "label": "upgradeable",
+              "warnAt": 1,
+              "stacks": ["node"]
+            },
+            {
+              "name": "pip outdated",
+              "command": "pip list --outdated --format=json 2>/dev/null",
+              "resultType": "json-count",
+              "label": "outdated",
+              "warnAt": 1,
+              "stacks": ["python"]
+            },
+            {
+              "name": "mvn analyze",
+              "command": "mvn dependency:analyze 2>&1 | grep '\\[WARNING\\]'",
+              "resultType": "count",
+              "label": "dep warnings",
+              "warnAt": 1,
+              "stacks": ["java", "gradle"]
+            },
+            {
+              "name": "git stashes",
+              "command": "git stash list 2>/dev/null",
+              "resultType": "count",
+              "label": "stashes",
+              "warnAt": 1
+            },
+            {
+              "name": "todos",
+              "command": "grep -rlE 'TODO|FIXME' --include='*.ts' --include='*.js' --include='*.py' --include='*.java' --include='*.go' . 2>/dev/null",
+              "resultType": "count",
+              "label": "files w/ TODOs",
+              "warnAt": 1
+            }
+          ],
+          "items": {
+            "type": "object",
+            "required": ["name", "command", "resultType"],
+            "properties": {
+              "name": { "type": "string", "description": "Display name shown in the scan menu." },
+              "command": { "type": "string", "description": "Shell command to run. Use {path} as placeholder for the project path." },
+              "resultType": {
+                "type": "string",
+                "enum": ["count", "pass-fail", "json-count", "json-field", "text"],
+                "description": "How to parse stdout: count (integer), pass-fail (exit code), json-count (keys/items), json-field (dot-path), text (first line)."
+              },
+              "field": { "type": "string", "description": "Dot-notation field path for json-field type (e.g. metadata.vulnerabilities.total)." },
+              "label": { "type": "string", "description": "Suffix shown after the number (e.g. 'vulns')." },
+              "warnAt": { "type": "number", "description": "Show yellow warning when value >= this." },
+              "errorAt": { "type": "number", "description": "Show red error when value >= this." },
+              "stacks": { "type": "array", "items": { "type": "string" }, "description": "Only run on projects with matching stack (e.g. ['node', 'python']). Omit to run on all." }
+            }
+          }
         }
       }
     }

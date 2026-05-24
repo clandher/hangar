@@ -658,6 +658,15 @@ section { margin-bottom: 32px; }
 
 .tip-who { color: var(--info); }
 
+.tip-scan-line {
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+  color: var(--fg);
+  font-size: 10px;
+  word-break: break-all;
+}
+.tip-scan-line:last-child { border-bottom: none; }
+
 /* ============================================================
    empty + footer
    ============================================================ */
@@ -689,3 +698,112 @@ section { margin-bottom: 32px; }
   font-size: 10px;
   color: var(--fg);
 }
+
+/* ============================================================
+   runner menu
+   ============================================================ */
+
+.runner-wrap {
+  position: relative;
+}
+
+.runner-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  min-width: 200px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
+
+.runner-item {
+  padding: 7px 12px;
+  font-size: 11px;
+  color: var(--fg);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.1s;
+}
+.runner-item:hover { background: var(--accent-bg); color: var(--accent); }
+.runner-item.muted { color: var(--muted); cursor: default; }
+.runner-item.muted:hover { background: none; color: var(--muted); }
+
+.runner-stacks {
+  color: var(--muted);
+  font-size: 9px;
+  margin-left: auto;
+}
+
+.select-status {
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ============================================================
+   scan results on cards
+   ============================================================ */
+
+.scan-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 0;
+}
+
+.scan-results:empty { display: none; }
+
+.scan-tag {
+  font-size: 9px;
+  padding: 1px 6px;
+  border: 1px solid;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+
+.scan-tag.ok     { color: var(--accent);  border-color: var(--accent-dim); }
+.scan-tag.warn   { color: var(--warn);    border-color: var(--warn); }
+.scan-tag.error  { color: var(--danger);  border-color: var(--danger); }
+.scan-tag.neutral{ color: var(--muted);   border-color: var(--border-2); }
+
+/* ============================================================
+   select mode
+   ============================================================ */
+
+body.select-mode .card {
+  cursor: pointer;
+}
+
+body.select-mode .card:hover {
+  border-color: var(--info);
+}
+
+.card.selected {
+  border-color: var(--accent) !important;
+  background: var(--accent-bg) !important;
+}
+
+.card.selected::before {
+  background: var(--accent) !important;
+}
+
+/* ============================================================
+   PR button
+   ============================================================ */
+
+.card .pr-btn {
+  background: none;
+  border: 1px solid var(--border-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 1px 5px;
+  line-height: 1;
+  letter-spacing: 0.3px;
+  transition: color 0.1s, border-color 0.1s;
+}
+.card .pr-btn:hover { color: var(--info); border-color: var(--info); }
