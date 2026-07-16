@@ -859,6 +859,14 @@ function esc(s) {
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Safe to inline inside a JS string literal that itself lives in an HTML attribute
+// (e.g. onclick="fn('...')"). Doubles backslashes so Windows paths like
+// C:\\Users\\... don't get mangled by JS escape parsing (\\U, \\r → CR, etc),
+// then HTML-escapes quotes/angles. Use this — not esc — for onclick arguments.
+function jsstr(s) {
+  return esc(String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"));
+}
+
 function highlight(name, q) {
   if (!q) return esc(name);
   const tokens = q.trim().split(/\\s+/).filter(Boolean);
@@ -928,20 +936,21 @@ function getPrUrl(remoteUrl, branch) {
 
 // ── card html ────────────────────────────────────────────────
 function cardHtml(p, q) {
-  const pa = esc(p.path);
+  const pa = esc(p.path);       // for data-path attrs (read via getAttribute)
+  const paj = jsstr(p.path);    // for inline onclick JS-string args
 
   // tags row
   const stack = p.stack ? '<span class="stack">' + esc(p.stack) + '</span>' : '';
 
   // action buttons
   const isFav = favSet.has(p.path);
-  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + pa + '\\')" title="' + (isFav ? 'Unfavorite' : 'Favorite') + '">' + (isFav ? '★' : '☆') + '</button>';
-  const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + pa + '\\')" title="Open in terminal">⌨</button>';
-  const syncBtn = p.hasGit ? '<button class="sync-btn" data-path="' + pa + '" onclick="event.stopPropagation(); syncProject(\\'' + pa + '\\')" title="git fetch + re-sync">⟳</button>' : '';
+  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + paj + '\\')" title="' + (isFav ? 'Unfavorite' : 'Favorite') + '">' + (isFav ? '★' : '☆') + '</button>';
+  const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + paj + '\\')" title="Open in terminal">⌨</button>';
+  const syncBtn = p.hasGit ? '<button class="sync-btn" data-path="' + pa + '" onclick="event.stopPropagation(); syncProject(\\'' + paj + '\\')" title="git fetch + re-sync">⟳</button>' : '';
   const isJava = p.stack === 'java' || p.stack === 'gradle';
   const openBtn = isJava
-    ? '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + pa + '\\')">ij</button><button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">vsc</button>'
-    : '<button onclick="event.stopPropagation(); openCard(event, \\'' + pa + '\\')">open</button>';
+    ? '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + paj + '\\')">ij</button><button onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">vsc</button>'
+    : '<button onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">open</button>';
 
   // git status badges — explicit labels, no arrows
   const dirtyDot = p.isDirty === true
@@ -958,19 +967,19 @@ function cardHtml(p, q) {
   const branchOverride = PROJECT_BRANCHES[p.path];
   const branchBtnTip = branchOverride ? 'vs ' + branchOverride + ' (click to change)' : 'Set comparison branch';
   const branchBtn = p.hasGit
-    ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + pa + '\\')" title="' + esc(branchBtnTip) + '">⎇</button>'
+    ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + paj + '\\')" title="' + esc(branchBtnTip) + '">⎇</button>'
     : '';
   const branchName = p.branch ? '<span class="branch">⎇ ' + esc(p.branch) + '</span>' : '';
 
   // remote link
   const remoteBtn = p.remoteUrl
-    ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</button>'
+    ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</button>'
     : '';
 
   // PR link
   const prUrl = getPrUrl(p.remoteUrl, p.branch);
   const prBtn = prUrl
-    ? '<button class="pr-btn" onclick="event.stopPropagation(); openRemote(\\'' + esc(prUrl) + '\\')" title="Open pull request">PR↗</button>'
+    ? '<button class="pr-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(prUrl) + '\\')" title="Open pull request">PR↗</button>'
     : '';
 
   // meta: time + size
