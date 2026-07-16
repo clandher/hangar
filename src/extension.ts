@@ -716,14 +716,14 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
     </div>
     <div class="meta">
       <span class="path">${projects.length} projects</span>
-      <button onclick="refresh()">↺</button>
-      <button id="theme-cycle" class="cycle-btn">theme: ${esc(theme)} ▸</button>
-      <button onclick="toggleCloneBar()" title="Clonar repositorio">+ clone</button>
+      <button onclick="refresh()" title="Recargar la lista de proyectos">↺</button>
+      <button id="theme-cycle" class="cycle-btn" title="Cambiar el tema de colores">theme: ${esc(theme)} ▸</button>
+      <button onclick="toggleCloneBar()" title="Clonar un repositorio git dentro de un hangar">+ clone</button>
       <div class="runner-wrap" id="runner-wrap">
-        <button id="runner-btn" onclick="toggleRunnerMenu()">scan ▾</button>
+        <button id="runner-btn" onclick="toggleRunnerMenu()" title="Ejecutar un comando de escaneo sobre los proyectos seleccionados">scan ▾</button>
         <div id="runner-menu" class="runner-menu" style="display:none"></div>
       </div>
-      <button id="select-toggle" onclick="toggleSelectMode()">select</button>
+      <button id="select-toggle" onclick="toggleSelectMode()" title="Activar modo selección para actuar sobre varios proyectos a la vez">select</button>
       <span id="select-status" class="select-status"></span>
     </div>
   </div>
@@ -734,9 +734,9 @@ function getHtml(projects: Project[], hangars: Hangar[], favorites: string[], ui
       <input id="q" type="text" placeholder="filter projects..." />
       <span class="count" id="count"></span>
     </div>
-    <button id="sort-cycle" class="cycle-btn">sort: recent ▸</button>
-    <button id="git-toggle">git only</button>
-    <button id="attention-toggle">⚠ attention</button>
+    <button id="sort-cycle" class="cycle-btn" title="Cambiar el orden de la lista (reciente, modificado, nombre, tamaño, grupo, cambios)">sort: recent ▸</button>
+    <button id="git-toggle" title="Mostrar solo proyectos que son repositorios git">git only</button>
+    <button id="attention-toggle" title="Mostrar solo proyectos que requieren atención (cambios sin confirmar o commits por bajar)">⚠ attention</button>
   </div>
 </div>
 
@@ -823,6 +823,21 @@ const $gitToggle = document.getElementById('git-toggle');
 const $sortCycle = document.getElementById('sort-cycle');
 const $themeCycle= document.getElementById('theme-cycle');
 const $tooltip   = document.getElementById('g-tooltip');
+
+// ── icons (inline SVG, uniform 24-viewBox so every glyph is the same size) ──
+function svg(inner, filled) {
+  return '<svg viewBox="0 0 24 24" fill="' + (filled ? 'currentColor' : 'none') +
+    '" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    inner + '</svg>';
+}
+const ICON = {
+  star:     svg('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>', false),
+  starOn:   svg('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>', true),
+  refresh:  svg('<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>', false),
+  terminal: svg('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>', false),
+  branch:   svg('<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>', false),
+  link:     svg('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>', false),
+};
 
 // ── time formatting ─────────────────────────────────────────
 function fmtTime(ts) {
@@ -922,6 +937,62 @@ function hideTooltip() {
   tooltipHideTimer = setTimeout(() => $tooltip.classList.remove('visible'), 80);
 }
 
+// ── unified text tooltip (replaces flaky native title="") ────
+let textTipTimer = null;
+let textTipEl = null;
+
+function showTextTip(el) {
+  const msg = el.getAttribute('data-tip');
+  if (!msg) return;
+  clearTimeout(tooltipHideTimer);
+  $tooltip.innerHTML = '<div class="tip-text">' + esc(msg) + '</div>';
+  $tooltip.style.minWidth = '0';
+  $tooltip.style.maxWidth = '320px';
+  $tooltip.classList.add('visible');
+
+  const rect = el.getBoundingClientRect();
+  const tw = $tooltip.offsetWidth;
+  const th = $tooltip.offsetHeight;
+  let left = rect.left + rect.width / 2 - tw / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  // prefer below; flip above if it would overflow the viewport bottom
+  let top = rect.bottom + 6;
+  if (top + th > window.innerHeight - 8) top = rect.top - th - 6;
+  $tooltip.style.left = left + 'px';
+  $tooltip.style.top = top + 'px';
+}
+
+function hideTextTip() {
+  clearTimeout(textTipTimer);
+  textTipEl = null;
+  tooltipHideTimer = setTimeout(() => $tooltip.classList.remove('visible'), 60);
+}
+
+// delegate: any [title] element gets a uniform, instant-ish custom tooltip.
+// The native title is stripped on first hover so the OS tooltip never fires.
+document.addEventListener('mouseover', function (e) {
+  const el = e.target.closest('[title], [data-tip]');
+  if (!el || el.classList.contains('commits-badge')) return;  // commits has its own rich tooltip
+  if (el.hasAttribute('title')) {
+    const t = el.getAttribute('title');
+    if (t) el.setAttribute('data-tip', t);
+    el.removeAttribute('title');
+  }
+  if (textTipEl === el) return;
+  textTipEl = el;
+  clearTimeout(textTipTimer);
+  textTipTimer = setTimeout(() => { if (textTipEl === el) showTextTip(el); }, 110);
+});
+
+document.addEventListener('mouseout', function (e) {
+  const el = e.target.closest('[data-tip]');
+  if (!el) return;
+  const to = e.relatedTarget;
+  if (to && el.contains(to)) return;                      // still inside same element
+  if (to && to.closest && to.closest('[data-tip], [title]')) return; // moving to another tip; its mouseover takes over
+  hideTextTip();
+});
+
 // ── PR url helper ────────────────────────────────────────────
 function getPrUrl(remoteUrl, branch) {
   if (!remoteUrl || !branch) { return null; }
@@ -940,46 +1011,46 @@ function cardHtml(p, q) {
   const paj = jsstr(p.path);    // for inline onclick JS-string args
 
   // tags row
-  const stack = p.stack ? '<span class="stack">' + esc(p.stack) + '</span>' : '';
+  const stack = p.stack ? '<span class="stack" title="Tecnología detectada del proyecto: ' + esc(p.stack) + '">' + esc(p.stack) + '</span>' : '';
 
   // action buttons
   const isFav = favSet.has(p.path);
-  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + paj + '\\')" title="' + (isFav ? 'Unfavorite' : 'Favorite') + '">' + (isFav ? '★' : '☆') + '</button>';
-  const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + paj + '\\')" title="Open in terminal">⌨</button>';
-  const syncBtn = p.hasGit ? '<button class="sync-btn" data-path="' + pa + '" onclick="event.stopPropagation(); syncProject(\\'' + paj + '\\')" title="git fetch + re-sync">⟳</button>' : '';
+  const starBtn = '<button class="star-btn' + (isFav ? ' starred' : '') + '" onclick="event.stopPropagation(); toggleFavorite(\\'' + paj + '\\')" title="' + (isFav ? 'Quitar de favoritos' : 'Marcar como favorito') + '">' + (isFav ? ICON.starOn : ICON.star) + '</button>';
+  const termBtn = '<button class="term-btn" onclick="event.stopPropagation(); openInTerminal(\\'' + paj + '\\')" title="Abrir este proyecto en una terminal">' + ICON.terminal + '</button>';
+  const syncBtn = p.hasGit ? '<button class="sync-btn" data-path="' + pa + '" onclick="event.stopPropagation(); syncProject(\\'' + paj + '\\')" title="Actualizar estado git (git fetch + recalcular adelante/atrás y cambios)">' + ICON.refresh + '</button>' : '';
   const isJava = p.stack === 'java' || p.stack === 'gradle';
   const openBtn = isJava
-    ? '<button onclick="event.stopPropagation(); openIntelliJ(\\'' + paj + '\\')">ij</button><button onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">vsc</button>'
-    : '<button onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">open</button>';
+    ? '<button title="Abrir en IntelliJ IDEA" onclick="event.stopPropagation(); openIntelliJ(\\'' + paj + '\\')">ij</button><button title="Abrir en VS Code" onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">vsc</button>'
+    : '<button title="Abrir en VS Code (⌘/Ctrl+clic = ventana nueva)" onclick="event.stopPropagation(); openCard(event, \\'' + paj + '\\')">open</button>';
 
   // git status badges — explicit labels, no arrows
   const dirtyDot = p.isDirty === true
-    ? '<span class="dirty-dot" title="uncommitted changes">●</span>'
+    ? '<span class="dirty-dot" title="Trabajo sin guardar en git: hay archivos nuevos o modificados que todavía no forman parte de ningún commit. Haz commit (o descártalos) antes de cambiar de rama o hacer pull para no perderlos.">●</span>'
     : '';
 
   const abBase = p.abRef || CONFIG.baseBranch || '';
-  const pullTip = abBase ? p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' in ' + abBase + ' you need to pull' : '';
-  const pushTip = abBase ? p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' not yet pushed to ' + abBase : '';
+  const pullTip = abBase ? 'Debes hacer pull: hay ' + p.behind + ' commit' + (p.behind > 1 ? 's' : '') + ' en ' + abBase + ' que aún no tienes en local' : '';
+  const pushTip = abBase ? 'Debes hacer push: tienes ' + p.ahead  + ' commit' + (p.ahead  > 1 ? 's' : '') + ' en local que aún no subes a ' + abBase : '';
   const needPull = p.behind > 0  ? '<span class="need-pull" title="' + esc(pullTip) + '">pull</span>' : '';
   const needPush = p.ahead  > 0  ? '<span class="need-push" title="' + esc(pushTip) + '">push</span>' : '';
 
   // branch + compare button
   const branchOverride = PROJECT_BRANCHES[p.path];
-  const branchBtnTip = branchOverride ? 'vs ' + branchOverride + ' (click to change)' : 'Set comparison branch';
+  const branchBtnTip = branchOverride ? 'Comparando adelante/atrás contra la rama "' + branchOverride + '" (clic para cambiarla)' : 'Elegir contra qué rama comparar adelante/atrás (por defecto la rama base)';
   const branchBtn = p.hasGit
-    ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + paj + '\\')" title="' + esc(branchBtnTip) + '">⎇</button>'
+    ? '<button class="branch-btn' + (branchOverride ? ' active' : '') + '" onclick="event.stopPropagation(); setBaseBranch(\\'' + paj + '\\')" title="' + esc(branchBtnTip) + '">' + ICON.branch + '</button>'
     : '';
-  const branchName = p.branch ? '<span class="branch">⎇ ' + esc(p.branch) + '</span>' : '';
+  const branchName = p.branch ? '<span class="branch" title="Rama git actual: ' + esc(p.branch) + '">⎇ ' + esc(p.branch) + '</span>' : '';
 
   // remote link
   const remoteBtn = p.remoteUrl
-    ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(p.remoteUrl) + '\\')" title="' + esc(p.remoteUrl) + '">↗</button>'
+    ? '<button class="remote-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(p.remoteUrl) + '\\')" title="Abrir el repositorio remoto en el navegador: ' + esc(p.remoteUrl) + '">' + ICON.link + '</button>'
     : '';
 
   // PR link
   const prUrl = getPrUrl(p.remoteUrl, p.branch);
   const prBtn = prUrl
-    ? '<button class="pr-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(prUrl) + '\\')" title="Open pull request">PR↗</button>'
+    ? '<button class="pr-btn" onclick="event.stopPropagation(); openRemote(\\'' + jsstr(prUrl) + '\\')" title="Abrir en el navegador un pull request de esta rama">PR</button>'
     : '';
 
   // meta: time + size
@@ -990,7 +1061,7 @@ function cardHtml(p, q) {
 
   // commits badge (hover tooltip)
   const commitsBadge = p.hasGit && CONFIG.showGitInfo
-    ? '<span class="commits-badge" data-path="' + pa + '" title="Recent commits">commits</span>'
+    ? '<span class="commits-badge" data-path="' + pa + '">commits</span>'
     : '';
 
   // last commit line
@@ -1004,7 +1075,7 @@ function cardHtml(p, q) {
         '<span class="commit-meta">' + esc(c.author) + ' · ' + fmtTime(c.ts) + '</span>' +
         '</div>';
     } else {
-      commitRow = '<div class="commit-row pending">loading…</div>';
+      commitRow = '<div class="commit-row pending" title="Leyendo el historial git de este proyecto…">cargando info git (último commit, estado)…</div>';
     }
   }
 
@@ -1012,11 +1083,11 @@ function cardHtml(p, q) {
     <div class="card" data-path="\${pa}">
       <div class="card-header">
         <div class="card-tags">
-          <span class="tag">\${esc(p.group)}</span>
+          <span class="tag" title="Carpeta contenedora (hangar / subcarpeta): \${esc(p.group)}">\${esc(p.group)}</span>
           \${stack}
         </div>
       </div>
-      <div class="name">\${highlight(p.name, q)}</div>
+      <div class="name" title="\${esc(p.name)} — \${esc(p.path)}">\${highlight(p.name, q)}</div>
       <div class="card-git">
         \${branchName}
         \${dirtyDot}
@@ -1028,8 +1099,8 @@ function cardHtml(p, q) {
       <div class="card-footer">
         \${commitsBadge}
         <span class="spacer"></span>
-        <span class="meta-time" title="last opened">\${timeVal}</span>
-        <span class="meta-size">\${sizeVal}</span>
+        <span class="meta-time" title="\${p.lastOpened ? 'Última vez que lo abriste' : 'Última modificación de archivos'}">\${timeVal}</span>
+        <span class="meta-size" title="Tamaño en disco del proyecto">\${sizeVal}</span>
       </div>
       <div class="actions">\${starBtn}\${syncBtn}\${termBtn}\${branchBtn}\${remoteBtn}\${prBtn}\${openBtn}</div>
     </div>

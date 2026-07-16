@@ -156,59 +156,11 @@ html, body {
 .htab-add:hover { color: var(--accent); border-color: var(--accent-dim); }
 
 /* star / favorite button inside card actions */
-.star-btn {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 18px;
-  padding: 1px 4px;
-  line-height: 1;
-  transition: color 0.1s;
-}
-.star-btn:hover { color: var(--accent); }
+/* colors/state only — box, size and hover border are unified in the
+   ".card .actions button" rules below so every action looks identical */
 .star-btn.starred { color: var(--accent); }
-
-.term-btn {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 1px 4px;
-  line-height: 1;
-  transition: color 0.1s;
-}
-.term-btn:hover { color: var(--info); }
-
-.sync-btn {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 1px 4px;
-  line-height: 1;
-  transition: color 0.1s;
-}
-.sync-btn:hover { color: var(--accent); }
 .sync-btn.syncing { color: var(--warn); opacity: 0.7; cursor: wait; }
-
-.branch-btn {
-  background: none;
-  border: 1px solid transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  padding: 1px 4px;
-  line-height: 1;
-  transition: color 0.1s;
-}
-.branch-btn:hover { color: var(--info); }
-.branch-btn.active {
-  border-color: var(--border-2);
-  border-radius: 3px;
-}
+.branch-btn.active { border-color: var(--border-2) !important; }
 
 /* ============================================================
    topbar
@@ -441,16 +393,7 @@ section { margin-bottom: 32px; }
   gap: 6px;
   overflow: hidden;
 }
-.card::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 2px;
-  background: transparent;
-  transition: background 0.15s;
-}
 .card:hover { border-color: var(--accent-dim); background: var(--panel-2); }
-.card:hover::before { background: var(--accent); }
 
 /* header: tags + actions */
 .card-header {
@@ -583,17 +526,6 @@ section { margin-bottom: 32px; }
 .card .commits-badge:hover { color: var(--accent); border-color: var(--accent-dim); }
 
 /* remote button */
-.card .remote-btn {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 1px 3px;
-  transition: color 0.1s;
-}
-.card .remote-btn:hover { color: var(--accent); }
-
 /* actions */
 .card .actions {
   display: flex;
@@ -603,7 +535,38 @@ section { margin-bottom: 32px; }
   justify-content: flex-end;
   padding-top: 6px;
 }
-.card .actions button { padding: 2px 6px; font-size: 10px; }
+
+/* unified box for EVERY action button (icons + text) */
+.card .actions button {
+  box-sizing: border-box;
+  height: 26px;
+  min-width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  background: none;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
+}
+/* icon-only buttons use inline SVG — identical box for every glyph */
+.card .actions button svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+  flex-shrink: 0;
+}
+/* single hover effect for all: border box + subtle bg + brighter text */
+.card .actions button:hover {
+  color: var(--fg);
+  border-color: var(--border-2);
+  background: var(--bg2, rgba(127,127,127,0.14));
+}
 
 /* ============================================================
    global tooltip (JS-positioned, fixed)
@@ -626,6 +589,13 @@ section { margin-bottom: 32px; }
 }
 
 .g-tooltip.visible { display: block; }
+
+/* short text tooltip (unified native-title replacement) */
+.g-tooltip .tip-text {
+  color: var(--fg);
+  line-height: 1.4;
+  word-break: break-word;
+}
 
 .g-tooltip .tip-head {
   color: var(--accent);
@@ -787,23 +757,10 @@ body.select-mode .card:hover {
   background: var(--accent-bg) !important;
 }
 
-.card.selected::before {
-  background: var(--accent) !important;
-}
 
 /* ============================================================
    PR button
    ============================================================ */
 
-.card .pr-btn {
-  background: none;
-  border: 1px solid var(--border-2);
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 9px;
-  padding: 1px 5px;
-  line-height: 1;
-  letter-spacing: 0.3px;
-  transition: color 0.1s, border-color 0.1s;
-}
-.card .pr-btn:hover { color: var(--info); border-color: var(--info); }
+/* pr-btn uses the unified .card .actions button box; only tweak its text */
+.card .pr-btn { letter-spacing: 0.3px; }
